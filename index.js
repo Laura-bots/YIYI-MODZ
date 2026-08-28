@@ -257,15 +257,6 @@ async function descargarAudioYoutube(url) {
     return { tipo: 'url', url: enlaceAudio, titulo: data.title || data.titulo || null };
   }
 
-  const buffer = Buffer.from(await respuesta.arrayBuffer());
-  if (buffer.length < 5000) {
-    throw new Error('El descargador devolvió un archivo demasiado pequeño, probablemente un error.');
-  }
-  const rutaTemporal = path.join(__dirname, `temp_youtube_${Date.now()}.m4a`);
-  fs.writeFileSync(rutaTemporal, buffer);
-  return { tipo: 'archivo', ruta: rutaTemporal };
-}
-
   // Caso 2: el descargador devuelve el archivo de audio directamente (binario)
   const buffer = Buffer.from(await respuesta.arrayBuffer());
   if (buffer.length < 5000) {
