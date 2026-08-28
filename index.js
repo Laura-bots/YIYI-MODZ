@@ -49,7 +49,7 @@ function limpiarArchivosTemporalesViejos() {
     const archivos = fs.readdirSync(__dirname);
     let borrados = 0;
     for (const archivo of archivos) {
-      if (/^temp_tiktok_/.test(archivo)) {
+      if (/^temp_tiktok_/.test(archivo) || /^temp_youtube_/.test(archivo)) {
         try { fs.unlinkSync(path.join(__dirname, archivo)); borrados++; } catch {}
       }
     }
@@ -210,6 +210,99 @@ async function manejarComandoTiktok(sock, jidDestino, enlace) {
   }
 }
 
+// ── YOUTUBE: conecta al mini-servidor descargador externo (Deno + ffmpeg) ───
+// ⚠️ IMPORTANTE: no tengo visibilidad del código real de tu mini-servidor,
+// así que este bloque asume el patrón más común de este tipo de servicios:
+//   POST {URL_DESCARGAS}/descargar   body: { "url": "<enlace de youtube>" }
+//   header: "x-api-key": CLAVE_API_DESCARGAS
+//   respuesta esperada: JSON con un campo de enlace de audio, por ejemplo
+//   { "url": "https://..." } o { "audioUrl": "https://..." } o
+//   { "download_url": "https://..." } — si ninguno de esos campos aparece,
+//   se intenta tratar la respuesta completa como el archivo de audio binario.
+// Si al probar sale un error de formato, pásame el fragmento de tu
+// descargador que define esa ruta y lo ajusto exacto.
+const ENLACE_YOUTUBE = /(?:https?:\/\/)?(?:www\.|m\.|music\.)?(?:youtube\.com\/(?:watch\?v=|shorts\/)|youtu\.be\/)[^\s]+/i;
+
+function limpiarValorEnvGenerico(valor) {
+  return (valor || '').replace(/[^\x20-\x7E]/g, '').trim();
+}
+
+const URL_DESCARGAS = limpiarValorEnvGenerico(process.env.URL_DESCARGAS) || 'https://mini-servidor.onrender.com';
+const CLAVE_API_DESCARGAS = limpiarValorEnvGenerico(process.env.CLAVE_API_DESCARGAS) || 'Albert292776';
+
+async function descargarAudioYoutube(url) {
+  const parametros = new URLSearchParams({ url });
+  if (CLAVE_API_DESCARGAS) parametros.set('clave', CLAVE_API_DESCARGAS);
+  const respuesta = await fetch(`${URL_DESCARGAS}/audio?${parametros.toString()}`);
+
+  if (!respuesta.ok) {
+    let detalle = '';
+    try {
+      const data = await respuesta.json();
+      detalle = data.detalle || data.error || JSON.stringify(data);
+    } catch (err) {
+      detalle = await respuesta.text().catch(() => '');
+    }
+    throw new Error(`El descargador respondió ${respuesta.status}: ${String(detalle).slice(0, 300)}`);
+  }
+
+  const tipoContenido = respuesta.headers.get('content-type') || '';
+
+  if (tipoContenido.includes('application/json')) {
+    const data = await respuesta.json();
+    const enlaceAudio = data.url || data.audioUrl || data.download_url || data.enlace || null;
+    if (!enlaceAudio) {
+      throw new Error(`El descargador devolvió JSON pero sin un campo de enlace reconocible: ${JSON.stringify(data).slice(0, 200)}`);
+    }
+    return { tipo: 'url', url: enlaceAudio, titulo: data.title || data.titulo || null };
+  }
+
+  const buffer = Buffer.from(await respuesta.arrayBuffer());
+  if (buffer.length < 5000) {
+    throw new Error('El descargador devolvió un archivo demasiado pequeño, probablemente un error.');
+  }
+  const rutaTemporal = path.join(__dirname, `temp_youtube_${Date.now()}.m4a`);
+  fs.writeFileSync(rutaTemporal, buffer);
+  return { tipo: 'archivo', ruta: rutaTemporal };
+}
+
+  // Caso 2: el descargador devuelve el archivo de audio directamente (binario)
+  const buffer = Buffer.from(await respuesta.arrayBuffer());
+  if (buffer.length < 5000) {
+    throw new Error('El descargador devolvió un archivo demasiado pequeño, probablemente un error.');
+  }
+  const rutaTemporal = path.join(__dirname, `temp_youtube_${Date.now()}.mp3`);
+  fs.writeFileSync(rutaTemporal, buffer);
+  return { tipo: 'archivo', ruta: rutaTemporal };
+}
+
+async function manejarComandoYoutube(sock, jidDestino, enlace) {
+  if (!ENLACE_YOUTUBE.test(enlace)) {
+    await sock.sendMessage(jidDestino, { text: '🎵 Pásame un enlace de YouTube válido (video o Shorts) y te descargo el audio.' });
+    return;
+  }
+  await sock.sendMessage(jidDestino, { text: '🎧 Dame un momentito, estoy descargando el audio...' });
+  let rutaTemporal = null;
+  try {
+    const resultado = await descargarAudioYoutube(enlace);
+    const caption = resultado.titulo ? `🎶 ${resultado.titulo}` : '🎶 ¡Aquí está tu audio!';
+    if (resultado.tipo === 'archivo') {
+      rutaTemporal = resultado.ruta;
+      await sock.sendMessage(jidDestino, { audio: { url: resultado.ruta }, mimetype: 'audio/mp4', ptt: false });
+      await sock.sendMessage(jidDestino, { text: caption });
+    } else {
+      await sock.sendMessage(jidDestino, { audio: { url: resultado.url }, mimetype: 'audio/mp4', ptt: false });
+      await sock.sendMessage(jidDestino, { text: caption });
+    }
+    console.log('✅ Audio de YouTube enviado correctamente');
+  } catch (err) {
+    console.error('❌ Error descargando audio de YouTube:', err.message);
+    await sock.sendMessage(jidDestino, { text: `💔 No pude descargar ese audio. Detalle técnico (para revisar): ${err.message.slice(0, 150)}` });
+  } finally {
+    if (rutaTemporal && fs.existsSync(rutaTemporal)) { try { fs.unlinkSync(rutaTemporal); } catch {} }
+  }
+}
+
 function obtenerTextoMensaje(msg) {
   return (
     msg.message.conversation ||
@@ -221,6 +314,7 @@ function obtenerTextoMensaje(msg) {
 
 const PATRON_COMANDO_FOTOFF = /^\/fotoff\s+(\S+)/i;
 const PATRON_COMANDO_ELIMINAR_FOTO = /^\/eliminar\s+foto\s+(\S+)/i;
+const PATRON_COMANDO_YOUTUBE = /^\/youtube\s+(\S+)/i;
 const CLAVE_IA_PRINCIPAL = process.env.CLAVE_IA_PRINCIPAL;
 const CLAVE_IA_RESPALDO = process.env.CLAVE_IA_RESPALDO;
 const CLAVE_IA_RESPALDO2 = process.env.CLAVE_IA_RESPALDO2;
@@ -228,12 +322,6 @@ const MODELO_PRINCIPAL = 'gemini-3.6-flash';
 const MODELO_RESPALDO = 'gemini-3.6-flash';
 const MODELO_RESPALDO2 = 'gemini-3.6-flash';
 
-// ⚠️ MODELOS DE IMAGEN A PROBAR — el bot los intenta en este orden hasta que
-// uno funcione. Revisa los logs de Render: dirá cuál modelo respondió con
-// éxito ("✅ Imagen generada con modelo: ..."). Si TODOS fallan, es probable
-// que tu clave de API no tenga acceso a generación de imágenes habilitado,
-// o que los nombres hayan cambiado — en ese caso pregúntame y actualizamos
-// la lista con los nombres vigentes en ese momento.
 const MODELOS_IMAGEN_A_PROBAR = [
   'gemini-2.5-flash-image',
   'gemini-2.5-flash-image-preview',
@@ -245,13 +333,13 @@ const MODELOS_IMAGEN_A_PROBAR = [
 const CODIGO_DUEÑO = '2927760128';
 const NOMBRE_BOT = 'Anzy';
 const CREADOR = 'Albert Oficial';
-const VERSION_BOT = '2.18.0';
+const VERSION_BOT = '2.19.0';
 const TU_NUMERO = '51996399291';
 const NUMERO_BOT_VINCULADO = '51975922748';
 const JID_DUEÑO = `${TU_NUMERO}@s.whatsapp.net`;
 const PUERTO = process.env.PORT || 3000;
 const LIMITE_DIARIO_ESTIMADO = 1400;
-const MAX_TOKENS_RESPUESTA = 1800;
+const MAX_TOKENS_RESPUESTA = 1500;
 const INTEGRANTES_POR_PAGINA = 10;
 
 const COMANDO_LLAMADA_IA = '/anzy';
@@ -259,6 +347,7 @@ const COMANDO_LLAMADA_IA = '/anzy';
 if (!CLAVE_IA_PRINCIPAL) console.log('❌ ALERTA: no se detectó CLAVE_IA_PRINCIPAL.');
 if (!CLAVE_IA_RESPALDO) console.log('⚠️ Aviso: no se detectó CLAVE_IA_RESPALDO.');
 if (!CLAVE_IA_RESPALDO2) console.log('⚠️ Aviso: no se detectó CLAVE_IA_RESPALDO2.');
+if (URL_DESCARGAS) console.log(`🔍 URL_DESCARGAS configurada: ${URL_DESCARGAS}`);
 
 const TEXTO_AYUDA = `*COMANDOS · ${NOMBRE_BOT}*
 
@@ -274,6 +363,7 @@ const TEXTO_AYUDA = `*COMANDOS · ${NOMBRE_BOT}*
 🎉 *Diversión y utilidades*
 • /frase — frase random
 • /tiktok <enlace> — video o foto/slideshow de TikTok (también puedes solo pasarme el enlace sin comando)
+• /youtube <enlace> — descarga el audio de un video o Shorts de YouTube 🎧
 • /perfil @usuario — actividad en el grupo
 
 👑 *Administración de grupo*
@@ -461,7 +551,6 @@ function desactivarTodosLosModos(jidChat, jidUsuario) {
   modoNovia.delete(clave); modoAmiga.delete(clave);
 }
 
-// ── Tiempos al mínimo — respuestas rápidas y autónomas ──────────────────────
 function calcularTiempoTecleo(texto) {
   const ms = texto.length * 5;
   return Math.min(Math.max(ms, 150), 600);
@@ -528,8 +617,6 @@ async function generarRespuestaIA(prompt, notasExtra, jidChat, jidUsuario) {
   throw new Error('No hay ningún token de IA configurado');
 }
 
-// ── GENERACIÓN DE IMÁGENES — prueba varios modelos en orden hasta que uno
-// funcione, y por cada cliente de IA disponible. Loguea cuál funcionó.
 async function generarImagenIA(prompt) {
   for (const cliente of CLIENTES_IA) {
     for (const modeloImagen of MODELOS_IMAGEN_A_PROBAR) {
@@ -641,10 +728,13 @@ function obtenerContextoListaVigente(jidChat, jidUsuario) {
 
 // ── DETECCIÓN DE INTENCIONES EN LENGUAJE NATURAL — abiertas a todos ─────────
 const PATRON_CREAR_IMAGEN = /\b(crea|creame|créame|hazme|haz|genera|generame|genérame|dibuja|dibujame|dibújame)\b.*\b(imagen|logo|foto|dibujo|arte|ilustraci[oó]n)\b/i;
+const PATRON_DESCARGAR_AUDIO_NATURAL = /\b(descarga|descárgame|b[aá]jame|baja|convi[eé]rte|convi[eé]rtelo|s[aá]came)\b.*\b(audio|cancion|canci[oó]n|mp3)\b/i;
 
 function detectarIntencionNatural(texto) {
   const enlaceTiktok = texto.match(ENLACE_TIKTOK);
   if (enlaceTiktok) return { tipo: 'tiktok', enlace: enlaceTiktok[0] };
+  const enlaceYoutube = texto.match(ENLACE_YOUTUBE);
+  if (enlaceYoutube) return { tipo: 'youtube', enlace: enlaceYoutube[0] };
   if (PATRON_CREAR_IMAGEN.test(texto)) {
     const prompt = texto.replace(PATRON_CREAR_IMAGEN, '').trim() || texto;
     return { tipo: 'imagen', prompt };
@@ -653,8 +743,6 @@ function detectarIntencionNatural(texto) {
 }
 
 // ── DETECCIÓN DE INTENCIONES DE ADMINISTRACIÓN — SOLO PARA EL PROPIETARIO ──
-// Estas cubren cerrar/abrir grupo, promover/degradar, silenciar/activar y
-// eliminar del clan (por mención o por nombre), todo en lenguaje natural.
 const PATRON_CERRAR_GRUPO = /\bcierra\b.*\bgrupo\b|\bgrupo\b.*\bcierra\b|\bcerrar\s+el\s+grupo\b/i;
 const PATRON_ABRIR_GRUPO = /\babre\b.*\bgrupo\b|\bgrupo\b.*\babre\b|\babrir\s+el\s+grupo\b/i;
 const PATRON_PROMOVER = /\b(hazlo|hazla|conviertelo|conviértelo|convierte|dale)\b.*\badmin\b|\bhaz\s+admin\b/i;
@@ -662,7 +750,6 @@ const PATRON_DEGRADAR = /\b(quitale|quítale|quita)\b.*\badmin\b|\bdegrada\b/i;
 const PATRON_SILENCIAR = /\bsilencia\b|\bsilenciar\b|\bcallalo\b|\bcállalo\b/i;
 const PATRON_ACTIVAR = /\bactivalo\b|\bactívalo\b|\breactivalo\b|\breactívalo\b|\bdesilenciar\b|\bquita(le)?\s+el\s+silencio\b/i;
 const PATRON_ELIMINAR_INTEGRANTE = /\belimina(r)?\b|\bborra(r)?\b|\bquita(r)?\s+del\s+clan\b/i;
-const PATRON_AGREGAR_CLAN = /\bagrega(r)?\s+al\s+clan\b|\bagrega(r)?\s+integrante\b/i;
 
 function detectarIntencionAdminPropietario(texto) {
   if (PATRON_CERRAR_GRUPO.test(texto)) return { tipo: 'cerrar_grupo' };
@@ -1647,6 +1734,12 @@ async function manejarComandosGenerales(sock, jidChat, jidUsuario, texto, mencio
     case '/info': await sock.sendMessage(jidChat, { text: generarTextoInfo() }); return true;
     case '/creador': await sock.sendMessage(jidChat, { text: TEXTO_CREADOR }); return true;
 
+    case '/youtube': {
+      const enlace = resto.join(' ').trim();
+      await manejarComandoYoutube(sock, jidChat, enlace);
+      return true;
+    }
+
     case '/recordar': {
       const lista = memoriaPersistente[jidUsuario] || [];
       if (!lista.length) { await sock.sendMessage(jidChat, { text: 'Aún no tengo nada guardado de ti 🤔' }); return true; }
@@ -1662,6 +1755,10 @@ async function manejarComandosGenerales(sock, jidChat, jidUsuario, texto, mencio
 async function manejarIntencionNatural(sock, jidChat, jidUsuario, intencion) {
   if (intencion.tipo === 'tiktok') {
     await manejarComandoTiktok(sock, jidChat, intencion.enlace);
+    return true;
+  }
+  if (intencion.tipo === 'youtube') {
+    await manejarComandoYoutube(sock, jidChat, intencion.enlace);
     return true;
   }
   if (intencion.tipo === 'imagen') {
@@ -1682,8 +1779,6 @@ async function manejarIntencionNatural(sock, jidChat, jidUsuario, intencion) {
   return false;
 }
 
-// ── EJECUTOR DE ÓRDENES DE ADMINISTRACIÓN EN LENGUAJE NATURAL — SOLO EL
-// PROPIETARIO PUEDE ACTIVARLO. Devuelve true si se atendió el mensaje.
 async function ejecutarOrdenAdminNatural(sock, jidChat, jidUsuario, texto, mencionados, esGrupo) {
   const esDueño = await esPropietarioContexto(sock, jidChat, jidUsuario);
   if (!esDueño) return false;
@@ -1722,7 +1817,6 @@ async function ejecutarOrdenAdminNatural(sock, jidChat, jidUsuario, texto, menci
   }
 
   if (intencion.tipo === 'eliminar_integrante') {
-    // Elimina del CLAN (lista de integrantes), no del grupo de WhatsApp.
     if (mencionados.length) {
       const numero = await resolverNumeroReal(sock, jidChat, mencionados[0]);
       const ficha = buscarIntegrantePorNumero(numero);
@@ -1745,7 +1839,6 @@ async function ejecutarOrdenAdminNatural(sock, jidChat, jidUsuario, texto, menci
         return true;
       }
     }
-    // Sin mención ni nombre reconocible → dejamos que siga a la IA normal.
     return false;
   }
 
@@ -1792,6 +1885,12 @@ async function procesarMensajeGrupo(sock, msg, identificadoresBot) {
     return;
   }
 
+  if (PATRON_COMANDO_YOUTUBE.test(texto)) {
+    const m = texto.match(PATRON_COMANDO_YOUTUBE);
+    await manejarComandoYoutube(sock, jidGrupo, m[1]);
+    return;
+  }
+
   if (esIntencionCompra(texto)) {
     try {
       await sock.sendMessage(jidGrupo, { text: 'Dame un toque que le aviso a Alberto para que te atienda directo 🙌', mentions: [jidUsuario] });
@@ -1820,16 +1919,13 @@ async function procesarMensajeGrupo(sock, msg, identificadoresBot) {
 
   const consultaSinMencion = texto.replace(/@\d+/g, '').replace(/^\/\S*\s*/, '').trim() || texto;
 
-  // ── PRIORIDAD 1: órdenes de administración en natural — SOLO propietario ──
   if (await ejecutarOrdenAdminNatural(sock, jidGrupo, jidUsuario, consultaSinMencion, mencionados, true)) return;
 
-  // ── PRIORIDAD 2: intenciones abiertas a todos (tiktok, imagen) ──────────
   const intencion = detectarIntencionNatural(consultaSinMencion);
   if (intencion) {
     if (await manejarIntencionNatural(sock, jidGrupo, jidUsuario, intencion)) return;
   }
 
-  // ── PRIORIDAD 3: ficha por mención directa ──────────────────────────────
   if (mencionados.length && /\b(informaci[oó]n|informe|info|datos|ficha|perfil|foto)\b/i.test(consultaSinMencion)) {
     if (await tienePermisoClan(sock, jidGrupo, jidUsuario)) {
       const numero = await resolverNumeroReal(sock, jidGrupo, mencionados[0]);
@@ -1838,7 +1934,6 @@ async function procesarMensajeGrupo(sock, msg, identificadoresBot) {
     }
   }
 
-  // ── PRIORIDAD 4: ficha/lista por nombre en lenguaje natural ─────────────
   const nombreBuscado = detectarSolicitudInfoPorNombre(consultaSinMencion);
   if (nombreBuscado) {
     if (await tienePermisoClan(sock, jidGrupo, jidUsuario)) {
@@ -1904,7 +1999,6 @@ function registrarBienvenidasYDespedidas(sock) {
       if (['add', 'remove', 'promote', 'demote'].includes(action) && !accionFueDelBot(jidGrupo, action, jidParticipante)) {
         await registrarAccionAdmin(sock, jidGrupo, action, author || null, [jidParticipante], nombreGrupo);
       }
-      // Sin mensajes públicos en el grupo — todo llega solo a tu chat personal.
     }
   });
 }
@@ -2018,6 +2112,12 @@ async function iniciarBot() {
           return;
         }
 
+        if (PATRON_COMANDO_YOUTUBE.test(textoPersonal)) {
+          const m = textoPersonal.match(PATRON_COMANDO_YOUTUBE);
+          await manejarComandoYoutube(sock, remitente, m[1]);
+          return;
+        }
+
         if (await manejarComandosClanUniversal(sock, remitente, remitente, textoPersonal, [], msg)) return;
 
         if (esCodigoDueño(textoPersonal)) {
@@ -2120,7 +2220,7 @@ const LISTA_COMANDOS_PANEL = [
   { cat: '🧠 Inteligencia Artificial', items: [
     ['/anzy <pregunta>', 'Pregúntale a la IA'],
     ['@bot <pregunta>', 'Mencionando al bot'],
-    ['"descárgame este tiktok <enlace>"', 'Descarga sin comando, en lenguaje natural'],
+    ['"descárgame este tiktok/youtube <enlace>"', 'Descarga sin comando, en lenguaje natural'],
     ['"hazme un logo de..."', 'Genera una imagen con IA'],
     ['(propietario) "cierra/abre grupo", "elimina a @user"', 'Ejecuta la acción directo, sin comando']
   ]},
@@ -2130,6 +2230,7 @@ const LISTA_COMANDOS_PANEL = [
   ]},
   { cat: '🎉 Diversión y utilidades', items: [
     ['/tiktok · /tik tok <enlace>', 'Video o fotos de TikTok sin marca de agua'],
+    ['/youtube <enlace>', 'Descarga el audio de un video/Shorts de YouTube 🎧'],
     ['/frase', 'Frase random'],
     ['/perfil @user', 'Actividad en el grupo']
   ]},
