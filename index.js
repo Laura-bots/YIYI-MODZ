@@ -10,8 +10,6 @@ const path = require('path');
 const { exec } = require('child_process');
 const pino = require('pino');
 
-// ── UTILIDAD ÚNICA de limpieza de variables de entorno (antes había dos
-// funciones idénticas — se unificaron en esta sola, usada en todo el archivo) ──
 function limpiarValorEnv(valor) {
   return (valor || '').replace(/[^\x20-\x7E]/g, '').trim();
 }
@@ -55,7 +53,7 @@ function limpiarArchivosTemporalesViejos() {
     const archivos = fs.readdirSync(__dirname);
     let borrados = 0;
     for (const archivo of archivos) {
-      if (/^temp_tiktok_/.test(archivo) || /^temp_youtube_/.test(archivo)) {
+      if (/^temp_tiktok_/.test(archivo) || /^temp_youtube_/.test(archivo) || /^temp_facebook_/.test(archivo)) {
         try { fs.unlinkSync(path.join(__dirname, archivo)); borrados++; } catch {}
       }
     }
@@ -77,7 +75,7 @@ function ejecutarComando(cmd, opciones) {
   });
 }
 
-// ── TIKTOK ───────────────────────────────────────────────────────────────
+// ── TIKTOK (descarga local con yt-dlp, sin cambios) ─────────────────────────
 const PATRON_COMANDO_TIKTOK = /^\/tik\s*tok\b/i;
 const ENLACE_TIKTOK = /(?:https?:\/\/)?(?:www\.|vm\.|vt\.|m\.)?tiktok\.com\/[^\s]+/i;
 const MAX_INTENTOS_TIKTOK = 3;
@@ -199,7 +197,7 @@ async function enviarResultadoTiktok(sock, jidDestino, resultado) {
 
 async function manejarComandoTiktok(sock, jidDestino, enlace) {
   if (!ENLACE_TIKTOK.test(enlace)) {
-    await sock.sendMessage(jidDestino, { text: '💕 Pásame un enlace de TikTok válido y te lo descargo.' });
+    await sock.sendMessage(jidDestino, { text: '💕 Uso: /tiktok <enlace>' });
     return;
   }
   await sock.sendMessage(jidDestino, { text: '🎬 ¡Claro que sí! Dame un momentito 💖' });
@@ -217,74 +215,127 @@ async function manejarComandoTiktok(sock, jidDestino, enlace) {
   }
 }
 
-// ── YOUTUBE (mini-servidor externo) — ENDPOINT Y MIMETYPE CORREGIDOS ────────
-// GET {URL_DESCARGAS}/audio?url=<enlace>&clave=<CLAVE_API_DESCARGAS>
-// Tu servidor entrega .m4a → mimetype 'audio/mp4' (no 'audio/mpeg').
-// Solo el comando exacto /youtube <enlace> dispara la descarga — ya NO se
-// activa automáticamente por pegar un enlace de YouTube en el chat.
+// ── MINI-SERVIDOR DESCARGADOR (YouTube audio/video + Facebook video/audio) ──
 const ENLACE_YOUTUBE = /(?:https?:\/\/)?(?:www\.|m\.|music\.)?(?:youtube\.com\/(?:watch\?v=|shorts\/)|youtu\.be\/)[^\s]+/i;
+const ENLACE_FACEBOOK = /(?:https?:\/\/)?(?:www\.|m\.|web\.)?(?:facebook\.com|fb\.watch)\/[^\s]+/i;
 
 const URL_DESCARGAS = limpiarValorEnv(process.env.URL_DESCARGAS) || 'https://mini-servidor.onrender.com';
 const CLAVE_API_DESCARGAS = limpiarValorEnv(process.env.CLAVE_API_DESCARGAS) || 'Albert292776';
 
+async function extraerDetalleError(respuesta) {
+  try {
+    const data = await respuesta.json();
+    return data.detalle || data.error || JSON.stringify(data);
+  } catch (err) {
+    return await respuesta.text().catch(() => '');
+  }
+}
+
+// YouTube · audio
 async function descargarAudioYoutube(url) {
   const parametros = new URLSearchParams({ url });
   if (CLAVE_API_DESCARGAS) parametros.set('clave', CLAVE_API_DESCARGAS);
   const respuesta = await fetch(`${URL_DESCARGAS}/audio?${parametros.toString()}`);
-
   if (!respuesta.ok) {
-    let detalle = '';
-    try {
-      const data = await respuesta.json();
-      detalle = data.detalle || data.error || JSON.stringify(data);
-    } catch (err) {
-      detalle = await respuesta.text().catch(() => '');
-    }
+    const detalle = await extraerDetalleError(respuesta);
     throw new Error(`El descargador respondió ${respuesta.status}: ${String(detalle).slice(0, 300)}`);
   }
-
-  const tipoContenido = respuesta.headers.get('content-type') || '';
-
-  if (tipoContenido.includes('application/json')) {
-    const data = await respuesta.json();
-    const enlaceAudio = data.url || data.audioUrl || data.download_url || data.enlace || null;
-    if (!enlaceAudio) {
-      throw new Error(`El descargador devolvió JSON pero sin un campo de enlace reconocible: ${JSON.stringify(data).slice(0, 200)}`);
-    }
-    return { tipo: 'url', url: enlaceAudio, titulo: data.title || data.titulo || null };
-  }
-
   const buffer = Buffer.from(await respuesta.arrayBuffer());
-  if (buffer.length < 5000) {
-    throw new Error('El descargador devolvió un archivo demasiado pequeño, probablemente un error.');
-  }
+  if (buffer.length < 5000) throw new Error('El descargador devolvió un archivo demasiado pequeño, probablemente un error.');
   const rutaTemporal = path.join(__dirname, `temp_youtube_${Date.now()}.m4a`);
   fs.writeFileSync(rutaTemporal, buffer);
-  return { tipo: 'archivo', ruta: rutaTemporal };
+  return rutaTemporal;
 }
 
 async function manejarComandoYoutube(sock, jidDestino, enlace) {
   if (!ENLACE_YOUTUBE.test(enlace)) {
-    await sock.sendMessage(jidDestino, { text: '🎵 Pásame un enlace de YouTube válido (video o Shorts) y te descargo el audio.' });
+    await sock.sendMessage(jidDestino, { text: '🎵 Uso: /youtube <enlace>' });
     return;
   }
   await sock.sendMessage(jidDestino, { text: '🎧 Dame un momentito, estoy descargando el audio...' });
   let rutaTemporal = null;
   try {
-    const resultado = await descargarAudioYoutube(enlace);
-    const caption = resultado.titulo ? `🎶 ${resultado.titulo}` : '🎶 ¡Aquí está tu audio!';
-    if (resultado.tipo === 'archivo') {
-      rutaTemporal = resultado.ruta;
-      await sock.sendMessage(jidDestino, { audio: { url: resultado.ruta }, mimetype: 'audio/mp4', ptt: false });
-      await sock.sendMessage(jidDestino, { text: caption });
-    } else {
-      await sock.sendMessage(jidDestino, { audio: { url: resultado.url }, mimetype: 'audio/mp4', ptt: false });
-      await sock.sendMessage(jidDestino, { text: caption });
-    }
+    rutaTemporal = await descargarAudioYoutube(enlace);
+    await sock.sendMessage(jidDestino, { audio: { url: rutaTemporal }, mimetype: 'audio/mp4', ptt: false });
     console.log('✅ Audio de YouTube enviado correctamente');
   } catch (err) {
     console.error('❌ Error descargando audio de YouTube:', err.message);
-    await sock.sendMessage(jidDestino, { text: `💔 No pude descargar ese audio. Detalle técnico (para revisar): ${err.message.slice(0, 150)}` });
+    await sock.sendMessage(jidDestino, { text: `💔 No pude descargar ese audio. Detalle: ${err.message.slice(0, 150)}` });
+  } finally {
+    if (rutaTemporal && fs.existsSync(rutaTemporal)) { try { fs.unlinkSync(rutaTemporal); } catch {} }
+  }
+}
+
+// YouTube · video
+async function descargarVideoYoutube(url) {
+  const parametros = new URLSearchParams({ url });
+  if (CLAVE_API_DESCARGAS) parametros.set('clave', CLAVE_API_DESCARGAS);
+  const respuesta = await fetch(`${URL_DESCARGAS}/video?${parametros.toString()}`);
+  if (!respuesta.ok) {
+    const detalle = await extraerDetalleError(respuesta);
+    throw new Error(`El descargador respondió ${respuesta.status}: ${String(detalle).slice(0, 300)}`);
+  }
+  const buffer = Buffer.from(await respuesta.arrayBuffer());
+  if (buffer.length < 5000) throw new Error('El descargador devolvió un archivo demasiado pequeño, probablemente un error.');
+  const rutaTemporal = path.join(__dirname, `temp_youtube_video_${Date.now()}.mp4`);
+  fs.writeFileSync(rutaTemporal, buffer);
+  return rutaTemporal;
+}
+
+async function manejarComandoYoutubeVideo(sock, jidDestino, enlace) {
+  if (!ENLACE_YOUTUBE.test(enlace)) {
+    await sock.sendMessage(jidDestino, { text: '🎬 Uso: /youtubevideo <enlace>' });
+    return;
+  }
+  await sock.sendMessage(jidDestino, { text: '🎬 Dame un momentito, estoy descargando el video...' });
+  let rutaTemporal = null;
+  try {
+    rutaTemporal = await descargarVideoYoutube(enlace);
+    await sock.sendMessage(jidDestino, { video: { url: rutaTemporal }, caption: '🎥 ¡Aquí está tu video! ✨' });
+    console.log('✅ Video de YouTube enviado correctamente');
+  } catch (err) {
+    console.error('❌ Error descargando video de YouTube:', err.message);
+    await sock.sendMessage(jidDestino, { text: `💔 No pude descargar ese video. Detalle: ${err.message.slice(0, 150)}` });
+  } finally {
+    if (rutaTemporal && fs.existsSync(rutaTemporal)) { try { fs.unlinkSync(rutaTemporal); } catch {} }
+  }
+}
+
+// Facebook · video y audio
+async function descargarFacebook(url, tipo) {
+  const parametros = new URLSearchParams({ url, tipo });
+  if (CLAVE_API_DESCARGAS) parametros.set('clave', CLAVE_API_DESCARGAS);
+  const respuesta = await fetch(`${URL_DESCARGAS}/facebook?${parametros.toString()}`);
+  if (!respuesta.ok) {
+    const detalle = await extraerDetalleError(respuesta);
+    throw new Error(`El descargador respondió ${respuesta.status}: ${String(detalle).slice(0, 300)}`);
+  }
+  const buffer = Buffer.from(await respuesta.arrayBuffer());
+  if (buffer.length < 5000) throw new Error('El descargador devolvió un archivo demasiado pequeño, probablemente un error.');
+  const extension = tipo === 'audio' ? 'm4a' : 'mp4';
+  const rutaTemporal = path.join(__dirname, `temp_facebook_${tipo}_${Date.now()}.${extension}`);
+  fs.writeFileSync(rutaTemporal, buffer);
+  return rutaTemporal;
+}
+
+async function manejarComandoFacebook(sock, jidDestino, enlace, tipo) {
+  if (!ENLACE_FACEBOOK.test(enlace)) {
+    await sock.sendMessage(jidDestino, { text: `📘 Uso: /${tipo === 'audio' ? 'facebookaudio' : 'facebook'} <enlace>` });
+    return;
+  }
+  await sock.sendMessage(jidDestino, { text: tipo === 'audio' ? '🎧 Dame un momentito, estoy sacando el audio...' : '🎬 Dame un momentito, estoy descargando el video...' });
+  let rutaTemporal = null;
+  try {
+    rutaTemporal = await descargarFacebook(enlace, tipo);
+    if (tipo === 'audio') {
+      await sock.sendMessage(jidDestino, { audio: { url: rutaTemporal }, mimetype: 'audio/mp4', ptt: false });
+    } else {
+      await sock.sendMessage(jidDestino, { video: { url: rutaTemporal }, caption: '🎥 ¡Aquí está tu video! ✨' });
+    }
+    console.log('✅ Contenido de Facebook enviado correctamente');
+  } catch (err) {
+    console.error('❌ Error descargando de Facebook:', err.message);
+    await sock.sendMessage(jidDestino, { text: `💔 No pude descargar eso de Facebook. Detalle: ${err.message.slice(0, 150)}` });
   } finally {
     if (rutaTemporal && fs.existsSync(rutaTemporal)) { try { fs.unlinkSync(rutaTemporal); } catch {} }
   }
@@ -299,9 +350,13 @@ function obtenerTextoMensaje(msg) {
   ).trim();
 }
 
+// ── Patrones de comandos exactos (sin modo natural) ─────────────────────────
 const PATRON_COMANDO_FOTOFF = /^\/fotoff\s+(\S+)/i;
 const PATRON_COMANDO_ELIMINAR_FOTO = /^\/eliminar\s+foto\s+(\S+)/i;
 const PATRON_COMANDO_YOUTUBE = /^\/youtube\s+(\S+)/i;
+const PATRON_COMANDO_YOUTUBEVIDEO = /^\/youtubevideo\s+(\S+)/i;
+const PATRON_COMANDO_FACEBOOK_AUDIO = /^\/facebookaudio\s+(\S+)/i;
+const PATRON_COMANDO_FACEBOOK = /^\/facebook\s+(\S+)/i;
 const CLAVE_IA_PRINCIPAL = process.env.CLAVE_IA_PRINCIPAL;
 const CLAVE_IA_RESPALDO = process.env.CLAVE_IA_RESPALDO;
 const CLAVE_IA_RESPALDO2 = process.env.CLAVE_IA_RESPALDO2;
@@ -320,13 +375,13 @@ const MODELOS_IMAGEN_A_PROBAR = [
 const CODIGO_DUEÑO = '2927760128';
 const NOMBRE_BOT = 'Anzy';
 const CREADOR = 'Albert Oficial';
-const VERSION_BOT = '2.20.0';
+const VERSION_BOT = '3.0.0';
 const TU_NUMERO = '51996399291';
 const NUMERO_BOT_VINCULADO = '51975922748';
 const JID_DUEÑO = `${TU_NUMERO}@s.whatsapp.net`;
 const PUERTO = process.env.PORT || 3000;
 const LIMITE_DIARIO_ESTIMADO = 1400;
-const MAX_TOKENS_RESPUESTA = 900;
+const MAX_TOKENS_RESPUESTA = 1500;
 const INTEGRANTES_POR_PAGINA = 10;
 
 const COMANDO_LLAMADA_IA = '/anzy';
@@ -336,21 +391,30 @@ if (!CLAVE_IA_RESPALDO) console.log('⚠️ Aviso: no se detectó CLAVE_IA_RESPA
 if (!CLAVE_IA_RESPALDO2) console.log('⚠️ Aviso: no se detectó CLAVE_IA_RESPALDO2.');
 if (URL_DESCARGAS) console.log(`🔍 URL_DESCARGAS configurada: ${URL_DESCARGAS}`);
 
+// ── LISTA PÚBLICA — es la ÚNICA que se muestra con /comando anzy, para
+// TODOS incluido el propietario. Los comandos de propietario ya NO aparecen
+// aquí; siguen funcionando si se escriben, pero solo quedan documentados
+// en LISTA_COMANDOS_PANEL (panel web de Render).
 const TEXTO_AYUDA = `*COMANDOS · ${NOMBRE_BOT}*
 
 🧠 *Inteligencia Artificial*
 • Mencióname, o escribe /anzy <pregunta>
-• Solo háblame natural: "descárgame este tiktok <enlace>", "hazme un logo de...", "dame la lista de integrantes"
 • Responde/cita un mensaje y mencióname para que lo lea también
+• /imagen <descripción> — genero una imagen con IA
 
-🎭 *Modos de personalidad* (funcionan en grupo y en privado)
+🎭 *Modos de personalidad*
 • /novia on · /novia off — modo cariñoso y coqueto
 • /amiga on · /amiga off — modo amiga cercana, relajada y con chispa
 
+🎉 *Descargas*
+• /tiktok <enlace> — video o fotos de TikTok sin marca de agua
+• /youtube <enlace> — audio de YouTube 🎧
+• /youtubevideo <enlace> — video de YouTube 🎬
+• /facebook <enlace> — video de Facebook
+• /facebookaudio <enlace> — audio de un video de Facebook
+
 🎉 *Diversión y utilidades*
 • /frase — frase random
-• /tiktok <enlace> — video o foto/slideshow de TikTok (también puedes solo pasarme el enlace sin comando)
-• /youtube <enlace> — descarga el audio de un video o Shorts de YouTube 🎧 (solo con este comando)
 • /perfil @usuario — actividad en el grupo
 
 👑 *Administración de grupo*
@@ -368,27 +432,6 @@ const TEXTO_AYUDA = `*COMANDOS · ${NOMBRE_BOT}*
 🗂️ *Memoria personal*
 • /recordar — qué recuerda de ti
 • /olvidarme — borra su memoria de ti`;
-
-const TEXTO_AYUDA_PROPIETARIO = `${TEXTO_AYUDA}
-
-👑 *Solo propietario* (funciona en grupo o en privado, y en LENGUAJE NATURAL — sin comandos)
-• /propietario — verificarte con contraseña
-• "cierra el grupo" / "abre el grupo" — lo ejecuto directo
-• "hazlo admin a @user" / "quítale el admin a @user" — lo ejecuto directo
-• "silencia a @user" / "actívalo de nuevo" — lo ejecuto directo
-• "elimina a @user" o "elimina a <nombre>" — lo saco del CLAN (lista de integrantes), no del grupo de WhatsApp
-• /nombreff · /numeroff · /idff · /apodoff — registro paso a paso del clan
-• /clan agregar Nombre; Número; ID FF; Apodo
-• /clan ver <código o número> · /clan quitar <código o número>
-• /fotoff <código> — envía una imagen con esta descripción para guardarle foto a esa integrante
-• /eliminar foto <código> — quita solo la foto, sin borrar la ficha
-• /eliminar <código de 2 cifras> — elimina a alguien del clan (borra también su foto)
-• /integrantes — muestra la página 1 y cuántas páginas hay
-• /lista 01 · /lista 02 · etc — ver el clan en bloques de 10
-• /integrante @usuario — ficha de esa persona
-• /silencio @usuario — el bot deja de responderle por completo
-• /activarse @usuario — el bot vuelve a responderle
-• /movimiento — últimos movimientos de admins 🗂️ (todos los reportes llegan a tu chat personal)`;
 
 const PALABRAS_CRISIS = [
   'quiero morir', 'no quiero vivir', 'suicidar', 'suicidio', 'matarme',
@@ -431,9 +474,11 @@ Si el mensaje incluye un "MENSAJE CITADO", tómalo en cuenta para entender de qu
 
 Si estás hablando con TU PROPIETARIO/CREADOR (se te indicará explícitamente), trátalo con más cercanía y calidez, como corresponde con quien te creó.
 
+IMPORTANTE: solo eres una asistente conversacional. No ejecutas acciones sobre el grupo ni el clan por tu cuenta — todas esas acciones (cerrar grupo, promover, eliminar, etc.) requieren que la persona use el comando exacto. Si te piden hacer algo así en lenguaje natural, explica amablemente cuál es el comando que deben usar.
+
 CÓMO ERES:
 ✅ Amable, femenina, empática, positiva y con harta disposición para ayudar.
-✅ EXPLÍCITA y CLARA: cuando te pregunten algo, explica bien el "por qué" y el "cómo", no des respuestas vagas ni incompletas. Si algo tiene pasos, enuméralos.
+✅ EXPLÍCITA y CLARA: cuando te pregunten algo, explica bien el "por qué" y el "cómo". Si algo tiene pasos, enuméralos.
 ✅ Directa al grano, sin relleno innecesario, pero sin sacrificar claridad.
 ✅ Usas emojis con soltura pero sin exagerar (2 a 4 por respuesta).
 ✅ Hablas como una creación de ${CREADOR} — nunca como si tú fueras la dueña del bot.
@@ -629,6 +674,26 @@ async function generarImagenIA(prompt) {
   return null;
 }
 
+// ── /imagen <descripción> — comando explícito (ya NO se dispara por frase libre) ──
+async function comandoImagen(sock, jidDestino, descripcion) {
+  if (!descripcion || descripcion.trim().length < 2) {
+    await sock.sendMessage(jidDestino, { text: 'Uso: /imagen <descripción>\nEj: /imagen un logo minimalista de un zorro' });
+    return;
+  }
+  await sock.sendMessage(jidDestino, { text: '🎨 Dame un segundito, la estoy creando...' });
+  try {
+    const buffer = await generarImagenIA(descripcion);
+    if (buffer) {
+      await sock.sendMessage(jidDestino, { image: buffer, caption: '✨ ¡Aquí tienes!' });
+    } else {
+      await sock.sendMessage(jidDestino, { text: '💔 No pude generar la imagen esta vez — probé varios modelos y ninguno respondió.' });
+    }
+  } catch (err) {
+    console.log('❌ Error generando imagen:', err.message);
+    await sock.sendMessage(jidDestino, { text: '💔 No pude generar la imagen, intenta de nuevo en un momento.' });
+  }
+}
+
 function obtenerIdentificadoresBot(sock) {
   const ids = new Set();
   const rawId = sock.user?.id || '';
@@ -661,90 +726,19 @@ function normalizarBusqueda(texto) {
     .trim();
 }
 
+// ── Búsqueda de integrantes por nombre — SOLO LECTURA, no ejecuta ninguna
+// acción destructiva, así que se conserva (no es "modo natural" de riesgo). ──
 function detectarSolicitudInfoPorNombre(texto) {
   const t = texto.trim();
-  if (!/\b(informaci[oó]n|informe|info|datos|ficha|perfil|lista|listado|usuarios|integrantes)\b/i.test(t)) return null;
+  if (!/\b(informaci[oó]n|informe|info|datos|ficha|perfil)\b/i.test(t)) return null;
   let resto = t
     .replace(/^.*?\b(?:del|de la|de|sobre)\s+integrante\b/i, '')
-    .replace(/^.*?\b(?:informaci[oó]n|informe|info|datos|ficha|perfil|lista|listado|usuarios|integrantes)\b/i, '')
-    .replace(/^\s*(?:del|de la|de|del clan|de|sobre|los|las|el|la|que tengo|agregados|registrados)\s+/i, '')
+    .replace(/^.*?\b(?:informaci[oó]n|informe|info|datos|ficha|perfil)\b/i, '')
+    .replace(/^\s*(?:del|de la|de|del clan|de|sobre|los|las|el|la)\s+/i, '')
     .trim()
     .replace(/[.?!]+$/, '');
   if (!resto || resto.length < 2 || resto.length > 45) return null;
   return resto;
-}
-
-const PALABRAS_GENERICAS_CLAN = ['integrante', 'miembro', 'clan del grupo', ' clan', 'usuarios registrados', 'usuarios'];
-function esSolicitudGenericaDeListado(candidato) {
-  const norm = normalizarBusqueda(candidato);
-  if (!norm) return true;
-  return PALABRAS_GENERICAS_CLAN.some(p => norm.includes(p.trim()));
-}
-
-const NUMEROS_EN_PALABRAS = {
-  'uno': 1, 'una': 1, 'primera': 1, 'primero': 1,
-  'dos': 2, 'segunda': 2, 'segundo': 2,
-  'tres': 3, 'tercera': 3, 'tercero': 3,
-  'cuatro': 4, 'cuarta': 4, 'cuarto': 4,
-  'cinco': 5, 'quinta': 5, 'quinto': 5
-};
-function detectarNumeroPaginaEnTexto(texto) {
-  const limpio = normalizarBusqueda(texto);
-  const matchDigito = limpio.match(/\b(\d{1,2})\b/);
-  if (matchDigito) return parseInt(matchDigito[1], 10);
-  const palabras = limpio.split(/\s+/);
-  for (const palabra of palabras) {
-    if (NUMEROS_EN_PALABRAS[palabra]) return NUMEROS_EN_PALABRAS[palabra];
-  }
-  return null;
-}
-
-const CONTEXTO_LISTA_VALIDEZ_MS = 3 * 60 * 1000;
-const contextoListaClan = new Map();
-function claveContextoLista(jidChat, jidUsuario) { return `${jidChat}:${extraerNumero(jidUsuario) || jidUsuario}`; }
-function guardarContextoLista(jidChat, jidUsuario, totalPaginas) {
-  contextoListaClan.set(claveContextoLista(jidChat, jidUsuario), { totalPaginas, marca: Date.now() });
-}
-function obtenerContextoListaVigente(jidChat, jidUsuario) {
-  const clave = claveContextoLista(jidChat, jidUsuario);
-  const entrada = contextoListaClan.get(clave);
-  if (!entrada) return null;
-  if (Date.now() - entrada.marca > CONTEXTO_LISTA_VALIDEZ_MS) { contextoListaClan.delete(clave); return null; }
-  return entrada;
-}
-
-// ── DETECCIÓN DE INTENCIONES NATURALES — TikTok e imagen quedan abiertas a
-// todos; YouTube se removió de aquí a propósito, solo funciona con /youtube ──
-const PATRON_CREAR_IMAGEN = /\b(crea|creame|créame|hazme|haz|genera|generame|genérame|dibuja|dibujame|dibújame)\b.*\b(imagen|logo|foto|dibujo|arte|ilustraci[oó]n)\b/i;
-
-function detectarIntencionNatural(texto) {
-  const enlaceTiktok = texto.match(ENLACE_TIKTOK);
-  if (enlaceTiktok) return { tipo: 'tiktok', enlace: enlaceTiktok[0] };
-  if (PATRON_CREAR_IMAGEN.test(texto)) {
-    const prompt = texto.replace(PATRON_CREAR_IMAGEN, '').trim() || texto;
-    return { tipo: 'imagen', prompt };
-  }
-  return null;
-}
-
-// ── DETECCIÓN DE INTENCIONES DE ADMINISTRACIÓN — SOLO PARA EL PROPIETARIO ──
-const PATRON_CERRAR_GRUPO = /\bcierra\b.*\bgrupo\b|\bgrupo\b.*\bcierra\b|\bcerrar\s+el\s+grupo\b/i;
-const PATRON_ABRIR_GRUPO = /\babre\b.*\bgrupo\b|\bgrupo\b.*\babre\b|\babrir\s+el\s+grupo\b/i;
-const PATRON_PROMOVER = /\b(hazlo|hazla|conviertelo|conviértelo|convierte|dale)\b.*\badmin\b|\bhaz\s+admin\b/i;
-const PATRON_DEGRADAR = /\b(quitale|quítale|quita)\b.*\badmin\b|\bdegrada\b/i;
-const PATRON_SILENCIAR = /\bsilencia\b|\bsilenciar\b|\bcallalo\b|\bcállalo\b/i;
-const PATRON_ACTIVAR = /\bactivalo\b|\bactívalo\b|\breactivalo\b|\breactívalo\b|\bdesilenciar\b|\bquita(le)?\s+el\s+silencio\b/i;
-const PATRON_ELIMINAR_INTEGRANTE = /\belimina(r)?\b|\bborra(r)?\b|\bquita(r)?\s+del\s+clan\b/i;
-
-function detectarIntencionAdminPropietario(texto) {
-  if (PATRON_CERRAR_GRUPO.test(texto)) return { tipo: 'cerrar_grupo' };
-  if (PATRON_ABRIR_GRUPO.test(texto)) return { tipo: 'abrir_grupo' };
-  if (PATRON_PROMOVER.test(texto)) return { tipo: 'promover' };
-  if (PATRON_DEGRADAR.test(texto)) return { tipo: 'degradar' };
-  if (PATRON_SILENCIAR.test(texto)) return { tipo: 'silenciar' };
-  if (PATRON_ACTIVAR.test(texto)) return { tipo: 'activar' };
-  if (PATRON_ELIMINAR_INTEGRANTE.test(texto)) return { tipo: 'eliminar_integrante' };
-  return null;
 }
 
 function extraerTextoCitado(msg) {
@@ -1410,9 +1404,6 @@ async function comandoCampoIntegrante(sock, jidChat, jidUsuario, campo, valor) {
   }
 }
 
-// ── FUNCIÓN COMPLETA — verificada, con TODOS sus casos (nombreff, numeroff,
-// idff, apodoff, eliminar foto, fotoff, integrantes, lista, integrante,
-// eliminar, clan agregar/quitar/ver/lista). No se corta en ningún punto. ──
 async function manejarComandosClanUniversal(sock, jidChat, jidUsuario, texto, mencionados, msg) {
   const matchNombre = texto.match(/^\/nombreff\s+(.+)/i);
   if (matchNombre) { await comandoCampoIntegrante(sock, jidChat, jidUsuario, 'nombre', matchNombre[1].trim()); return true; }
@@ -1444,9 +1435,7 @@ async function manejarComandosClanUniversal(sock, jidChat, jidUsuario, texto, me
       await sock.sendMessage(jidChat, { text: 'Solo las admins o el propietario pueden ver la lista del clan 🚫' });
       return true;
     }
-    const totalPag = totalPaginasClan();
     await sock.sendMessage(jidChat, { text: generarResumenClan() });
-    guardarContextoLista(jidChat, jidUsuario, totalPag);
     return true;
   }
   if (comando === '/lista') {
@@ -1455,7 +1444,6 @@ async function manejarComandosClanUniversal(sock, jidChat, jidUsuario, texto, me
       return true;
     }
     await sock.sendMessage(jidChat, { text: generarTextoPaginaClan(resto[0]) });
-    guardarContextoLista(jidChat, jidUsuario, totalPaginasClan());
     return true;
   }
   if (comando === '/integrante') {
@@ -1469,7 +1457,7 @@ async function manejarComandosClanUniversal(sock, jidChat, jidUsuario, texto, me
     if (sub === 'agregar') { await comandoClanAgregar(sock, jidChat, jidUsuario, restoSub); return true; }
     if (sub === 'quitar') { await comandoClanQuitar(sock, jidChat, jidUsuario, restoSub.trim()); return true; }
     if (sub === 'ver') { await comandoClanVer(sock, jidChat, restoSub.trim()); return true; }
-    if (sub === 'lista') { await sock.sendMessage(jidChat, { text: generarResumenClan() }); guardarContextoLista(jidChat, jidUsuario, totalPaginasClan()); return true; }
+    if (sub === 'lista') { await sock.sendMessage(jidChat, { text: generarResumenClan() }); return true; }
     await sock.sendMessage(jidChat, { text: 'Usa /integrantes para ver el resumen del clan 🙂' });
     return true;
   }
@@ -1530,6 +1518,7 @@ async function comandoPromoverDegradarComando(sock, jidGrupo, jidUsuario, mencio
   }
   const r = await comandoPromoverDegradar(sock, jidGrupo, jidUsuario, mencionados, accion);
   if (!r.ok) await sock.sendMessage(jidGrupo, { text: 'No pude hacer el cambio, revisa que el bot sea admin del grupo.' });
+  else await sock.sendMessage(jidGrupo, { text: accion === 'promote' ? '⭐ Listo, ahora es admin.' : '🔻 Listo, ya no es admin.' });
 }
 
 async function comandoTodos(sock, jidGrupo, jidUsuario, mensajeExtra) {
@@ -1555,10 +1544,8 @@ async function comandoCerrarGrupo(sock, jidGrupo, jidUsuario, cerrar) {
     try { const meta = await sock.groupMetadata(jidGrupo); nombreGrupo = meta.subject; } catch (err) {}
     await registrarAccionAdmin(sock, jidGrupo, cerrar ? 'cerrar' : 'abrir', jidUsuario, [], nombreGrupo);
     await sock.sendMessage(jidGrupo, { text: cerrar ? '🔒 Grupo cerrado, solo admins escriben.' : '🔓 Grupo abierto para todas.' });
-    return true;
   } catch (err) {
     await sock.sendMessage(jidGrupo, { text: 'No pude cambiar la configuración, revisa que el bot sea admin.' });
-    return false;
   }
 }
 
@@ -1615,6 +1602,11 @@ async function manejarComandosGenerales(sock, jidChat, jidUsuario, texto, mencio
 
   switch (comando) {
     case '/frase': await sock.sendMessage(jidChat, { text: comandoFrase() }); return true;
+
+    case '/imagen': {
+      await comandoImagen(sock, jidChat, resto.join(' '));
+      return true;
+    }
 
     case '/perfil':
       if (!esGrupo) { await sock.sendMessage(jidChat, { text: 'Este comando solo funciona dentro de un grupo.' }); return true; }
@@ -1717,12 +1709,6 @@ async function manejarComandosGenerales(sock, jidChat, jidUsuario, texto, mencio
     case '/info': await sock.sendMessage(jidChat, { text: generarTextoInfo() }); return true;
     case '/creador': await sock.sendMessage(jidChat, { text: TEXTO_CREADOR }); return true;
 
-    case '/youtube': {
-      const enlace = resto.join(' ').trim();
-      await manejarComandoYoutube(sock, jidChat, enlace);
-      return true;
-    }
-
     case '/recordar': {
       const lista = memoriaPersistente[jidUsuario] || [];
       if (!lista.length) { await sock.sendMessage(jidChat, { text: 'Aún no tengo nada guardado de ti 🤔' }); return true; }
@@ -1735,95 +1721,6 @@ async function manejarComandosGenerales(sock, jidChat, jidUsuario, texto, mencio
   }
   return false;
 }
-async function manejarIntencionNatural(sock, jidChat, jidUsuario, intencion) {
-  if (intencion.tipo === 'tiktok') {
-    await manejarComandoTiktok(sock, jidChat, intencion.enlace);
-    return true;
-  }
-  if (intencion.tipo === 'imagen') {
-    await sock.sendMessage(jidChat, { text: '🎨 Dame un segundito, la estoy creando...' });
-    try {
-      const buffer = await generarImagenIA(intencion.prompt);
-      if (buffer) {
-        await sock.sendMessage(jidChat, { image: buffer, caption: '✨ ¡Aquí tienes!' });
-      } else {
-        await sock.sendMessage(jidChat, { text: '💔 No pude generar la imagen esta vez — probé varios modelos y ninguno respondió. Puede que la clave de IA no tenga este permiso habilitado.' });
-      }
-    } catch (err) {
-      console.log('❌ Error generando imagen:', err.message);
-      await sock.sendMessage(jidChat, { text: '💔 No pude generar la imagen, intenta de nuevo en un momento.' });
-    }
-    return true;
-  }
-  return false;
-}
-
-async function ejecutarOrdenAdminNatural(sock, jidChat, jidUsuario, texto, mencionados, esGrupo) {
-  const esDueño = await esPropietarioContexto(sock, jidChat, jidUsuario);
-  if (!esDueño) return false;
-
-  const intencion = detectarIntencionAdminPropietario(texto);
-  if (!intencion) return false;
-
-  if (intencion.tipo === 'cerrar_grupo' || intencion.tipo === 'abrir_grupo') {
-    if (!esGrupo) { await sock.sendMessage(jidChat, { text: 'Esa orden solo aplica dentro de un grupo.' }); return true; }
-    await comandoCerrarGrupo(sock, jidChat, jidUsuario, intencion.tipo === 'cerrar_grupo');
-    return true;
-  }
-
-  if (intencion.tipo === 'promover' || intencion.tipo === 'degradar') {
-    if (!esGrupo) { await sock.sendMessage(jidChat, { text: 'Esa orden solo aplica dentro de un grupo.' }); return true; }
-    if (!mencionados.length) { await sock.sendMessage(jidChat, { text: 'Menciona a la persona para que pueda hacerlo.' }); return true; }
-    const accion = intencion.tipo === 'promover' ? 'promote' : 'demote';
-    const r = await comandoPromoverDegradar(sock, jidChat, jidUsuario, mencionados, accion);
-    if (!r.ok) await sock.sendMessage(jidChat, { text: 'No pude hacer el cambio, revisa que el bot sea admin del grupo.' });
-    else await sock.sendMessage(jidChat, { text: accion === 'promote' ? '⭐ Listo, ya es admin.' : '🔻 Listo, ya no es admin.' });
-    return true;
-  }
-
-  if (intencion.tipo === 'silenciar' || intencion.tipo === 'activar') {
-    if (!mencionados.length) { await sock.sendMessage(jidChat, { text: 'Menciona a la persona para que pueda hacerlo.' }); return true; }
-    if (intencion.tipo === 'silenciar') {
-      mencionados.forEach(j => SILENCIADOS.add(extraerNumero(j)));
-      guardarSilenciados();
-      await sock.sendMessage(jidChat, { text: `🔇 Listo, dejé de responderle a ${mencionados.length} usuario(s).` });
-    } else {
-      mencionados.forEach(j => SILENCIADOS.delete(extraerNumero(j)));
-      guardarSilenciados();
-      await sock.sendMessage(jidChat, { text: `🔊 Listo, ya vuelvo a responderle a ${mencionados.length} usuario(s).` });
-    }
-    return true;
-  }
-
-  if (intencion.tipo === 'eliminar_integrante') {
-    if (mencionados.length) {
-      const numero = await resolverNumeroReal(sock, jidChat, mencionados[0]);
-      const ficha = buscarIntegrantePorNumero(numero);
-      if (!ficha) { await sock.sendMessage(jidChat, { text: `No encontré a +${numero} en el clan.` }); return true; }
-      quitarIntegrante(ficha.codigo);
-      await sock.sendMessage(jidChat, { text: `🗑️ Eliminada del clan: *${ficha.apodo || ficha.nombre}*.` });
-      return true;
-    }
-    const nombreBuscado = detectarSolicitudInfoPorNombre(texto) || texto.replace(PATRON_ELIMINAR_INTEGRANTE, '').trim();
-    if (nombreBuscado && nombreBuscado.length >= 2) {
-      const encontrados = buscarIntegrantesPorNombre(nombreBuscado);
-      if (encontrados.length === 1) {
-        quitarIntegrante(encontrados[0].codigo);
-        await sock.sendMessage(jidChat, { text: `🗑️ Eliminada del clan: *${encontrados[0].apodo || encontrados[0].nombre}*.` });
-        return true;
-      }
-      if (encontrados.length > 1) {
-        const opciones = encontrados.map(f => `• ${f.nombre} (${f.apodo}) — código ${f.codigo}`).join('\n');
-        await sock.sendMessage(jidChat, { text: `Encontré varias coincidencias para "${nombreBuscado}":\n\n${opciones}\n\nDime el código exacto para eliminarla, ej: /eliminar 07` });
-        return true;
-      }
-    }
-    return false;
-  }
-
-  return false;
-}
-
 async function procesarMensajeGrupo(sock, msg, identificadoresBot) {
   const jidGrupo = msg.key.remoteJid;
   const jidUsuario = msg.key.participant || msg.key.remoteJid;
@@ -1840,7 +1737,7 @@ async function procesarMensajeGrupo(sock, msg, identificadoresBot) {
     if (texto.trim() === CODIGO_DUEÑO) {
       const numeroReal = await resolverNumeroReal(sock, jidGrupo, jidUsuario);
       propietariosVerificados.add(numeroReal);
-      await sock.sendMessage(jidGrupo, { text: '👑 Contraseña correcta. Te reconozco como propietaria/o del bot — ya puedes darme órdenes de administración en lenguaje natural, sin comandos.' });
+      await sock.sendMessage(jidGrupo, { text: '👑 Contraseña correcta. Te reconozco como propietaria/o del bot.' });
     } else {
       await sock.sendMessage(jidGrupo, { text: '❌ Contraseña incorrecta. Escribe /propietario para intentar de nuevo.' });
     }
@@ -1849,13 +1746,9 @@ async function procesarMensajeGrupo(sock, msg, identificadoresBot) {
 
   registrarMensajeGrupo(jidGrupo, jidUsuario);
 
-  if (!texto.trim().startsWith('/')) {
-    if (await intentarResponderSeguimientoLista(sock, jidGrupo, jidUsuario, texto)) return;
-  }
-
+  // ── /comando anzy — SIEMPRE la lista pública, sin comandos de propietario ──
   if (/^\/comando\s+anzy$/i.test(texto)) {
-    const esDueño = await esPropietarioContexto(sock, jidGrupo, jidUsuario);
-    await sock.sendMessage(jidGrupo, { text: esDueño ? TEXTO_AYUDA_PROPIETARIO : TEXTO_AYUDA });
+    await sock.sendMessage(jidGrupo, { text: TEXTO_AYUDA });
     return;
   }
 
@@ -1863,10 +1756,24 @@ async function procesarMensajeGrupo(sock, msg, identificadoresBot) {
     await manejarComandoTiktok(sock, jidGrupo, texto.replace(PATRON_COMANDO_TIKTOK, '').trim());
     return;
   }
-
   if (PATRON_COMANDO_YOUTUBE.test(texto)) {
     const m = texto.match(PATRON_COMANDO_YOUTUBE);
     await manejarComandoYoutube(sock, jidGrupo, m[1]);
+    return;
+  }
+  if (PATRON_COMANDO_YOUTUBEVIDEO.test(texto)) {
+    const m = texto.match(PATRON_COMANDO_YOUTUBEVIDEO);
+    await manejarComandoYoutubeVideo(sock, jidGrupo, m[1]);
+    return;
+  }
+  if (PATRON_COMANDO_FACEBOOK_AUDIO.test(texto)) {
+    const m = texto.match(PATRON_COMANDO_FACEBOOK_AUDIO);
+    await manejarComandoFacebook(sock, jidGrupo, m[1], 'audio');
+    return;
+  }
+  if (PATRON_COMANDO_FACEBOOK.test(texto)) {
+    const m = texto.match(PATRON_COMANDO_FACEBOOK);
+    await manejarComandoFacebook(sock, jidGrupo, m[1], 'video');
     return;
   }
 
@@ -1898,13 +1805,7 @@ async function procesarMensajeGrupo(sock, msg, identificadoresBot) {
 
   const consultaSinMencion = texto.replace(/@\d+/g, '').replace(/^\/\S*\s*/, '').trim() || texto;
 
-  if (await ejecutarOrdenAdminNatural(sock, jidGrupo, jidUsuario, consultaSinMencion, mencionados, true)) return;
-
-  const intencion = detectarIntencionNatural(consultaSinMencion);
-  if (intencion) {
-    if (await manejarIntencionNatural(sock, jidGrupo, jidUsuario, intencion)) return;
-  }
-
+  // ── Búsqueda de integrantes (solo lectura) al mencionar al bot + info + @user ──
   if (mencionados.length && /\b(informaci[oó]n|informe|info|datos|ficha|perfil|foto)\b/i.test(consultaSinMencion)) {
     if (await tienePermisoClan(sock, jidGrupo, jidUsuario)) {
       const numero = await resolverNumeroReal(sock, jidGrupo, mencionados[0]);
@@ -1916,14 +1817,6 @@ async function procesarMensajeGrupo(sock, msg, identificadoresBot) {
   const nombreBuscado = detectarSolicitudInfoPorNombre(consultaSinMencion);
   if (nombreBuscado) {
     if (await tienePermisoClan(sock, jidGrupo, jidUsuario)) {
-      if (esSolicitudGenericaDeListado(nombreBuscado)) {
-        const totalPag = totalPaginasClan();
-        let respuesta = generarTextoPaginaClan('1');
-        if (totalPag > 1) respuesta += `\n\nHay ${totalPag} páginas en total. Dime cuál quieres ver (ej: "la dos" o "página 3").`;
-        await sock.sendMessage(jidGrupo, { text: respuesta });
-        guardarContextoLista(jidGrupo, jidUsuario, totalPag);
-        return;
-      }
       const encontrados = buscarIntegrantesPorNombre(nombreBuscado);
       if (encontrados.length === 1) { await enviarFichaCompleta(sock, jidGrupo, encontrados[0]); return; }
       if (encontrados.length > 1) {
@@ -1950,21 +1843,6 @@ async function procesarMensajeGrupo(sock, msg, identificadoresBot) {
     console.log('❌ Error IA:', err.message);
     await sock.sendMessage(jidGrupo, { text: mensajeEsperaAleatorio() });
   }
-}
-
-async function intentarResponderSeguimientoLista(sock, jidChat, jidUsuario, texto) {
-  const contexto = obtenerContextoListaVigente(jidChat, jidUsuario);
-  if (!contexto) return false;
-  const numeroPagina = detectarNumeroPaginaEnTexto(texto);
-  if (!numeroPagina) return false;
-  if (!(await tienePermisoClan(sock, jidChat, jidUsuario))) return false;
-  if (numeroPagina > contexto.totalPaginas) {
-    await sock.sendMessage(jidChat, { text: `Esa página no existe. Solo hay ${contexto.totalPaginas} página(s) disponibles.` });
-    return true;
-  }
-  await sock.sendMessage(jidChat, { text: generarTextoPaginaClan(String(numeroPagina)) });
-  guardarContextoLista(jidChat, jidUsuario, contexto.totalPaginas);
-  return true;
 }
 
 function registrarBienvenidasYDespedidas(sock) {
@@ -2067,7 +1945,7 @@ async function iniciarBot() {
           pendientesPropietario.delete(remitente);
           if (textoPersonal.trim() === CODIGO_DUEÑO) {
             propietariosVerificados.add(extraerNumero(remitente));
-            await sock.sendMessage(remitente, { text: '👑 Contraseña correcta. Te reconozco como propietaria/o del bot — ya puedes darme órdenes en lenguaje natural, en cualquier grupo o desde aquí.' });
+            await sock.sendMessage(remitente, { text: '👑 Contraseña correcta. Te reconozco como propietaria/o del bot.' });
           } else {
             await sock.sendMessage(remitente, { text: '❌ Contraseña incorrecta. Escribe /propietario para intentar de nuevo.' });
           }
@@ -2076,13 +1954,8 @@ async function iniciarBot() {
 
         if (!textoPersonal) return;
 
-        if (!textoPersonal.trim().startsWith('/')) {
-          if (await intentarResponderSeguimientoLista(sock, remitente, remitente, textoPersonal)) return;
-        }
-
         if (/^\/comando\s+anzy$/i.test(textoPersonal)) {
-          const esDueño = esPropietarioEfectivo(remitente);
-          await sock.sendMessage(remitente, { text: esDueño ? TEXTO_AYUDA_PROPIETARIO : TEXTO_AYUDA });
+          await sock.sendMessage(remitente, { text: TEXTO_AYUDA });
           return;
         }
 
@@ -2090,10 +1963,24 @@ async function iniciarBot() {
           await manejarComandoTiktok(sock, remitente, textoPersonal.replace(PATRON_COMANDO_TIKTOK, '').trim());
           return;
         }
-
         if (PATRON_COMANDO_YOUTUBE.test(textoPersonal)) {
           const m = textoPersonal.match(PATRON_COMANDO_YOUTUBE);
           await manejarComandoYoutube(sock, remitente, m[1]);
+          return;
+        }
+        if (PATRON_COMANDO_YOUTUBEVIDEO.test(textoPersonal)) {
+          const m = textoPersonal.match(PATRON_COMANDO_YOUTUBEVIDEO);
+          await manejarComandoYoutubeVideo(sock, remitente, m[1]);
+          return;
+        }
+        if (PATRON_COMANDO_FACEBOOK_AUDIO.test(textoPersonal)) {
+          const m = textoPersonal.match(PATRON_COMANDO_FACEBOOK_AUDIO);
+          await manejarComandoFacebook(sock, remitente, m[1], 'audio');
+          return;
+        }
+        if (PATRON_COMANDO_FACEBOOK.test(textoPersonal)) {
+          const m = textoPersonal.match(PATRON_COMANDO_FACEBOOK);
+          await manejarComandoFacebook(sock, remitente, m[1], 'video');
           return;
         }
 
@@ -2122,23 +2009,8 @@ async function iniciarBot() {
         if (debeResponderIA(textoPersonal, msg, IDENTIFICADORES_BOT_CACHE)) {
           const consultaSinMencion = textoPersonal.replace(/^\/\S*\s*/, '').trim() || textoPersonal;
 
-          if (await ejecutarOrdenAdminNatural(sock, remitente, remitente, consultaSinMencion, [], false)) return;
-
-          const intencion = detectarIntencionNatural(consultaSinMencion);
-          if (intencion) {
-            if (await manejarIntencionNatural(sock, remitente, remitente, intencion)) return;
-          }
-
           const nombreBuscado = detectarSolicitudInfoPorNombre(consultaSinMencion);
           if (nombreBuscado && esPropietarioEfectivo(remitente)) {
-            if (esSolicitudGenericaDeListado(nombreBuscado)) {
-              const totalPag = totalPaginasClan();
-              let respuesta = generarTextoPaginaClan('1');
-              if (totalPag > 1) respuesta += `\n\nHay ${totalPag} páginas en total. Dime cuál quieres ver (ej: "la dos" o "página 3").`;
-              await sock.sendMessage(remitente, { text: respuesta });
-              guardarContextoLista(remitente, remitente, totalPag);
-              return;
-            }
             const encontrados = buscarIntegrantesPorNombre(nombreBuscado);
             if (encontrados.length === 1) { await enviarFichaCompleta(sock, remitente, encontrados[0]); return; }
             if (encontrados.length > 1) {
@@ -2195,56 +2067,60 @@ setInterval(async () => {
   }
 }, 30 * 1000);
 
+// ── PANEL WEB — aquí SÍ aparecen todos los comandos, incluidos los de
+// propietario (solo visibles en Render, no en el chat de WhatsApp). ────────
 const LISTA_COMANDOS_PANEL = [
   { cat: '🧠 Inteligencia Artificial', items: [
     ['/anzy <pregunta>', 'Pregúntale a la IA'],
     ['@bot <pregunta>', 'Mencionando al bot'],
-    ['"descárgame este tiktok <enlace>"', 'Descarga sin comando, en lenguaje natural'],
-    ['"hazme un logo de..."', 'Genera una imagen con IA'],
-    ['(propietario) "cierra/abre grupo", "elimina a @user"', 'Ejecuta la acción directo, sin comando']
+    ['/imagen <descripción>', 'Genera una imagen con IA']
   ]},
   { cat: '🎭 Modos de personalidad', items: [
     ['/novia on · /novia off', 'Modo cariñoso y coqueto'],
     ['/amiga on · /amiga off', 'Modo amiga cercana, relajada y con chispa']
   ]},
+  { cat: '🎉 Descargas', items: [
+    ['/tiktok <enlace>', 'Video o fotos de TikTok sin marca de agua'],
+    ['/youtube <enlace>', 'Audio de un video/Shorts de YouTube 🎧'],
+    ['/youtubevideo <enlace>', 'Video de YouTube 🎬'],
+    ['/facebook <enlace>', 'Video de Facebook'],
+    ['/facebookaudio <enlace>', 'Audio de un video de Facebook']
+  ]},
   { cat: '🎉 Diversión y utilidades', items: [
-    ['/tiktok · /tik tok <enlace>', 'Video o fotos de TikTok sin marca de agua'],
-    ['/youtube <enlace>', 'Descarga el audio de un video/Shorts de YouTube 🎧 (solo con comando)'],
     ['/frase', 'Frase random'],
     ['/perfil @user', 'Actividad en el grupo']
   ]},
-  { cat: '👑 Admin', items: [
+  { cat: '👑 Admin (grupo)', items: [
     ['/promover @user', 'Lo hace admin'],
     ['/degradar @user', 'Le quita admin'],
     ['/todos <msj>', 'Etiqueta a todos'],
     ['/cerrar · /abrir', 'Controla quién escribe'],
     ['/recordatorio <n>S/M/H <texto>', 'Aviso al grupo'],
-    ['/ranking', 'Top de más activas'],
-    ['/movimiento', 'Últimos movimientos (también llegan a tu privado)'],
-    ['/silencio @user', 'El bot deja de responderle por completo'],
-    ['/activarse @user', 'El bot vuelve a responderle']
+    ['/ranking', 'Top de más activas']
   ]},
-  { cat: '👑 Propietario', items: [
-    ['/propietario', 'Pide contraseña y te reconoce como propietaria/o']
-  ]},
-  { cat: '👥 Clan (lista GLOBAL, igual en todos los grupos)', items: [
+  { cat: '👑 SOLO PROPIETARIO (oculto del chat)', items: [
+    ['/propietario', 'Pide contraseña y te reconoce como propietaria/o'],
     ['/nombreff <nombre>', 'Guarda el nombre'],
     ['/numeroff <número>', 'Guarda el número'],
     ['/idff <ID>', 'Guarda el ID FF'],
     ['/apodoff <apodo>', 'Guarda el apodo'],
     ['/fotoff <código>', 'Guarda foto de esa integrante'],
     ['/eliminar foto <código>', 'Quita solo la foto'],
+    ['/clan agregar Nombre; Número; ID FF; Apodo', 'Registro en una línea'],
     ['/clan ver <código o número>', 'Ver una ficha'],
     ['/clan quitar <código o número>', 'Eliminar una ficha'],
     ['/eliminar <código>', 'Elimina a una integrante (y su foto)'],
     ['/integrantes', 'Página 1 y cuántas páginas hay'],
     ['/lista 01 · /lista 02 · etc', 'Ver el clan en bloques de 10'],
-    ['/integrante @user', 'Ficha de esa persona']
+    ['/integrante @user', 'Ficha de esa persona'],
+    ['/silencio @user', 'El bot deja de responderle por completo'],
+    ['/activarse @user', 'El bot vuelve a responderle'],
+    ['/movimiento', 'Últimos movimientos de admins (también llega a tu privado)']
   ]},
   { cat: '📋 Info', items: [
     ['/info', 'Info del bot'],
     ['/creador', 'Quién lo hizo'],
-    ['/comando anzy', 'Ver lista de comandos en el chat']
+    ['/comando anzy', 'Ver lista pública de comandos en el chat']
   ]},
   { cat: '🗂️ Memoria personal', items: [
     ['/recordar', 'Ver qué recuerda de ti'],
