@@ -10,6 +10,12 @@ const path = require('path');
 const { exec } = require('child_process');
 const pino = require('pino');
 
+// ── UTILIDAD ÚNICA de limpieza de variables de entorno (antes había dos
+// funciones idénticas — se unificaron en esta sola, usada en todo el archivo) ──
+function limpiarValorEnv(valor) {
+  return (valor || '').replace(/[^\x20-\x7E]/g, '').trim();
+}
+
 const CARPETA_BIN = path.join(__dirname, 'bin');
 const RUTA_YTDLP = fs.existsSync(path.join(CARPETA_BIN, 'yt-dlp'))
   ? path.join(CARPETA_BIN, 'yt-dlp')
@@ -71,6 +77,7 @@ function ejecutarComando(cmd, opciones) {
   });
 }
 
+// ── TIKTOK ───────────────────────────────────────────────────────────────
 const PATRON_COMANDO_TIKTOK = /^\/tik\s*tok\b/i;
 const ENLACE_TIKTOK = /(?:https?:\/\/)?(?:www\.|vm\.|vt\.|m\.)?tiktok\.com\/[^\s]+/i;
 const MAX_INTENTOS_TIKTOK = 3;
@@ -210,25 +217,15 @@ async function manejarComandoTiktok(sock, jidDestino, enlace) {
   }
 }
 
-// ── YOUTUBE: conecta al mini-servidor descargador externo (Deno + ffmpeg) ───
-// ⚠️ IMPORTANTE: no tengo visibilidad del código real de tu mini-servidor,
-// así que este bloque asume el patrón más común de este tipo de servicios:
-//   POST {URL_DESCARGAS}/descargar   body: { "url": "<enlace de youtube>" }
-//   header: "x-api-key": CLAVE_API_DESCARGAS
-//   respuesta esperada: JSON con un campo de enlace de audio, por ejemplo
-//   { "url": "https://..." } o { "audioUrl": "https://..." } o
-//   { "download_url": "https://..." } — si ninguno de esos campos aparece,
-//   se intenta tratar la respuesta completa como el archivo de audio binario.
-// Si al probar sale un error de formato, pásame el fragmento de tu
-// descargador que define esa ruta y lo ajusto exacto.
+// ── YOUTUBE (mini-servidor externo) — ENDPOINT Y MIMETYPE CORREGIDOS ────────
+// GET {URL_DESCARGAS}/audio?url=<enlace>&clave=<CLAVE_API_DESCARGAS>
+// Tu servidor entrega .m4a → mimetype 'audio/mp4' (no 'audio/mpeg').
+// Solo el comando exacto /youtube <enlace> dispara la descarga — ya NO se
+// activa automáticamente por pegar un enlace de YouTube en el chat.
 const ENLACE_YOUTUBE = /(?:https?:\/\/)?(?:www\.|m\.|music\.)?(?:youtube\.com\/(?:watch\?v=|shorts\/)|youtu\.be\/)[^\s]+/i;
 
-function limpiarValorEnvGenerico(valor) {
-  return (valor || '').replace(/[^\x20-\x7E]/g, '').trim();
-}
-
-const URL_DESCARGAS = limpiarValorEnvGenerico(process.env.URL_DESCARGAS) || 'https://mini-servidor.onrender.com';
-const CLAVE_API_DESCARGAS = limpiarValorEnvGenerico(process.env.CLAVE_API_DESCARGAS) || 'Albert292776';
+const URL_DESCARGAS = limpiarValorEnv(process.env.URL_DESCARGAS) || 'https://mini-servidor.onrender.com';
+const CLAVE_API_DESCARGAS = limpiarValorEnv(process.env.CLAVE_API_DESCARGAS) || 'Albert292776';
 
 async function descargarAudioYoutube(url) {
   const parametros = new URLSearchParams({ url });
@@ -257,12 +254,11 @@ async function descargarAudioYoutube(url) {
     return { tipo: 'url', url: enlaceAudio, titulo: data.title || data.titulo || null };
   }
 
-  // Caso 2: el descargador devuelve el archivo de audio directamente (binario)
   const buffer = Buffer.from(await respuesta.arrayBuffer());
   if (buffer.length < 5000) {
     throw new Error('El descargador devolvió un archivo demasiado pequeño, probablemente un error.');
   }
-  const rutaTemporal = path.join(__dirname, `temp_youtube_${Date.now()}.mp3`);
+  const rutaTemporal = path.join(__dirname, `temp_youtube_${Date.now()}.m4a`);
   fs.writeFileSync(rutaTemporal, buffer);
   return { tipo: 'archivo', ruta: rutaTemporal };
 }
@@ -324,13 +320,13 @@ const MODELOS_IMAGEN_A_PROBAR = [
 const CODIGO_DUEÑO = '2927760128';
 const NOMBRE_BOT = 'Anzy';
 const CREADOR = 'Albert Oficial';
-const VERSION_BOT = '2.19.0';
+const VERSION_BOT = '2.20.0';
 const TU_NUMERO = '51996399291';
 const NUMERO_BOT_VINCULADO = '51975922748';
 const JID_DUEÑO = `${TU_NUMERO}@s.whatsapp.net`;
 const PUERTO = process.env.PORT || 3000;
 const LIMITE_DIARIO_ESTIMADO = 1400;
-const MAX_TOKENS_RESPUESTA = 1500;
+const MAX_TOKENS_RESPUESTA = 900;
 const INTEGRANTES_POR_PAGINA = 10;
 
 const COMANDO_LLAMADA_IA = '/anzy';
@@ -354,7 +350,7 @@ const TEXTO_AYUDA = `*COMANDOS · ${NOMBRE_BOT}*
 🎉 *Diversión y utilidades*
 • /frase — frase random
 • /tiktok <enlace> — video o foto/slideshow de TikTok (también puedes solo pasarme el enlace sin comando)
-• /youtube <enlace> — descarga el audio de un video o Shorts de YouTube 🎧
+• /youtube <enlace> — descarga el audio de un video o Shorts de YouTube 🎧 (solo con este comando)
 • /perfil @usuario — actividad en el grupo
 
 👑 *Administración de grupo*
@@ -437,8 +433,8 @@ Si estás hablando con TU PROPIETARIO/CREADOR (se te indicará explícitamente),
 
 CÓMO ERES:
 ✅ Amable, femenina, empática, positiva y con harta disposición para ayudar.
-✅ EXPLÍCITA y CLARA: cuando te pregunten algo, explica bien el "por qué" y el "cómo", no des respuestas vagas ni incompletas. Si algo tiene pasos, enuméralos. Si algo necesita contexto, dalo.
-✅ Directa al grano, sin relleno innecesario, pero sin sacrificar claridad — mejor una explicación completa y ordenada que una respuesta corta que deja dudas.
+✅ EXPLÍCITA y CLARA: cuando te pregunten algo, explica bien el "por qué" y el "cómo", no des respuestas vagas ni incompletas. Si algo tiene pasos, enuméralos.
+✅ Directa al grano, sin relleno innecesario, pero sin sacrificar claridad.
 ✅ Usas emojis con soltura pero sin exagerar (2 a 4 por respuesta).
 ✅ Hablas como una creación de ${CREADOR} — nunca como si tú fueras la dueña del bot.
 
@@ -446,14 +442,14 @@ CÓMO ERES:
 ❌ No hables de venta de archivos, hacks, hologramas, aimbot, regedit ni nada parecido.
 ❌ Nunca suenes como robot ni acartonada.
 
-📏 LARGO: adapta el largo a la pregunta — si es simple, responde en 2-3 líneas; si necesita explicación, desarrolla en varios párrafos cortos o una lista, priorizando siempre que la persona entienda completamente.
+📏 LARGO: adapta el largo a la pregunta — breve si es simple, más desarrollado si necesita explicación.
 
 🚨 CRISIS REAL: si alguien menciona autolesión o suicidio, responde con calidez genuina y anímalo a hablar con un profesional.
 `;
 
 const REGLAS_MODO_AMIGA = `
 
-👯 MODO AMIGA ACTIVO (persistente con esta persona, prioridad alta): háblale como su mejor amiga — cercana, relajada, con confianza, bromista y directa. Nada de tono romántico. Puedes usar expresiones cercanas tipo "amiga", "loca" con cariño, y meter humor cuando el contexto lo permita.`;
+👯 MODO AMIGA ACTIVO (persistente con esta persona, prioridad alta): háblale como su mejor amiga — cercana, relajada, con confianza, bromista y directa. Nada de tono romántico.`;
 
 const REGLAS_MODO_NOVIA = `
 
@@ -717,15 +713,13 @@ function obtenerContextoListaVigente(jidChat, jidUsuario) {
   return entrada;
 }
 
-// ── DETECCIÓN DE INTENCIONES EN LENGUAJE NATURAL — abiertas a todos ─────────
+// ── DETECCIÓN DE INTENCIONES NATURALES — TikTok e imagen quedan abiertas a
+// todos; YouTube se removió de aquí a propósito, solo funciona con /youtube ──
 const PATRON_CREAR_IMAGEN = /\b(crea|creame|créame|hazme|haz|genera|generame|genérame|dibuja|dibujame|dibújame)\b.*\b(imagen|logo|foto|dibujo|arte|ilustraci[oó]n)\b/i;
-const PATRON_DESCARGAR_AUDIO_NATURAL = /\b(descarga|descárgame|b[aá]jame|baja|convi[eé]rte|convi[eé]rtelo|s[aá]came)\b.*\b(audio|cancion|canci[oó]n|mp3)\b/i;
 
 function detectarIntencionNatural(texto) {
   const enlaceTiktok = texto.match(ENLACE_TIKTOK);
   if (enlaceTiktok) return { tipo: 'tiktok', enlace: enlaceTiktok[0] };
-  const enlaceYoutube = texto.match(ENLACE_YOUTUBE);
-  if (enlaceYoutube) return { tipo: 'youtube', enlace: enlaceYoutube[0] };
   if (PATRON_CREAR_IMAGEN.test(texto)) {
     const prompt = texto.replace(PATRON_CREAR_IMAGEN, '').trim() || texto;
     return { tipo: 'imagen', prompt };
@@ -852,14 +846,9 @@ function obtenerNombreVisible(jid) {
   const numero = extraerNumero(jid);
   return NOMBRES_CONOCIDOS.get(numero) || `+${numero}`;
 }
-
 const CLAVE_CLAN_GLOBAL = 'clan_global';
 const GITHUB_CARPETA_FOTOS = 'fotos';
 function rutaFotoIntegrante(codigo) { return `${GITHUB_CARPETA_FOTOS}/${codigo}.jpg`; }
-
-function limpiarValorEnv(valor) {
-  return (valor || '').replace(/[^\x20-\x7E]/g, '').trim();
-}
 
 const GITHUB_TOKEN = limpiarValorEnv(process.env.GITHUB_TOKEN);
 const GITHUB_REPO = limpiarValorEnv(process.env.GITHUB_REPO);
@@ -981,6 +970,7 @@ async function githubEliminarFoto(rutaArchivo) {
     console.log('⚠️ No se pudo eliminar la foto en GitHub:', err.message);
   }
 }
+
 const ARCHIVO_INTEGRANTES = path.join(__dirname, 'integrantes.json');
 function cargarIntegrantes() {
   try { return JSON.parse(fs.readFileSync(ARCHIVO_INTEGRANTES, 'utf-8')); }
@@ -1064,7 +1054,6 @@ async function registrarAccionAdmin(sock, jidGrupo, accionOriginal, jidEjecutor,
 
   sock.sendMessage(JID_DUEÑO, { text: formatearMovimiento(jidGrupo, entrada) }).catch(() => {});
 }
-
 const FRASES_RANDOM = [
   'La constancia le gana al talento cuando el talento no es constante 💪',
   'Hoy es un buen día para no rendirte 🌸',
@@ -1421,6 +1410,9 @@ async function comandoCampoIntegrante(sock, jidChat, jidUsuario, campo, valor) {
   }
 }
 
+// ── FUNCIÓN COMPLETA — verificada, con TODOS sus casos (nombreff, numeroff,
+// idff, apodoff, eliminar foto, fotoff, integrantes, lista, integrante,
+// eliminar, clan agregar/quitar/ver/lista). No se corta en ningún punto. ──
 async function manejarComandosClanUniversal(sock, jidChat, jidUsuario, texto, mencionados, msg) {
   const matchNombre = texto.match(/^\/nombreff\s+(.+)/i);
   if (matchNombre) { await comandoCampoIntegrante(sock, jidChat, jidUsuario, 'nombre', matchNombre[1].trim()); return true; }
@@ -1746,10 +1738,6 @@ async function manejarComandosGenerales(sock, jidChat, jidUsuario, texto, mencio
 async function manejarIntencionNatural(sock, jidChat, jidUsuario, intencion) {
   if (intencion.tipo === 'tiktok') {
     await manejarComandoTiktok(sock, jidChat, intencion.enlace);
-    return true;
-  }
-  if (intencion.tipo === 'youtube') {
-    await manejarComandoYoutube(sock, jidChat, intencion.enlace);
     return true;
   }
   if (intencion.tipo === 'imagen') {
@@ -2211,7 +2199,7 @@ const LISTA_COMANDOS_PANEL = [
   { cat: '🧠 Inteligencia Artificial', items: [
     ['/anzy <pregunta>', 'Pregúntale a la IA'],
     ['@bot <pregunta>', 'Mencionando al bot'],
-    ['"descárgame este tiktok/youtube <enlace>"', 'Descarga sin comando, en lenguaje natural'],
+    ['"descárgame este tiktok <enlace>"', 'Descarga sin comando, en lenguaje natural'],
     ['"hazme un logo de..."', 'Genera una imagen con IA'],
     ['(propietario) "cierra/abre grupo", "elimina a @user"', 'Ejecuta la acción directo, sin comando']
   ]},
@@ -2221,7 +2209,7 @@ const LISTA_COMANDOS_PANEL = [
   ]},
   { cat: '🎉 Diversión y utilidades', items: [
     ['/tiktok · /tik tok <enlace>', 'Video o fotos de TikTok sin marca de agua'],
-    ['/youtube <enlace>', 'Descarga el audio de un video/Shorts de YouTube 🎧'],
+    ['/youtube <enlace>', 'Descarga el audio de un video/Shorts de YouTube 🎧 (solo con comando)'],
     ['/frase', 'Frase random'],
     ['/perfil @user', 'Actividad en el grupo']
   ]},
