@@ -39,6 +39,16 @@
       "codigo": "20",
       "tieneFoto": true,
       "fecha": "2026-08-22T16:04:43.880Z"
+    },
+    {
+      "nombre": "Albert",
+      "numero": "927 878 883",
+      "idFF": "6666997",
+      "apodo": "vergón",
+      "agregadoPor": "203912799899707",
+      "codigo": "96",
+      "tieneFoto": false,
+      "fecha": "2026-09-01T21:42:10.234Z"
     }
   ]
 }
