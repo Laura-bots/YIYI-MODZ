@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage, downloadContentFromMessage } = require('@whiskeysockets/baileys');
 const { GoogleGenAI } = require('@google/genai');
 const qrcodeTerminal = require('qrcode-terminal');
 const QRCode = require('qrcode');
@@ -10,9 +10,7 @@ const path = require('path');
 const { exec } = require('child_process');
 const pino = require('pino');
 
-function limpiarValorEnv(valor) {
-  return (valor || '').replace(/[^\x20-\x7E]/g, '').trim();
-}
+function limpiarValorEnv(valor) { return (valor || '').replace(/[^\x20-\x7E]/g, '').trim(); }
 
 const CARPETA_BIN = path.join(__dirname, 'bin');
 const RUTA_YTDLP = fs.existsSync(path.join(CARPETA_BIN, 'yt-dlp')) ? path.join(CARPETA_BIN, 'yt-dlp') : 'yt-dlp';
@@ -77,17 +75,10 @@ async function descargarVideoTiktokConYtDlp(url) {
   for (let intento = 1; intento <= MAX_INTENTOS_TIKTOK; intento++) {
     const archivo = path.join(__dirname, `temp_tiktok_${idTemp}_${intento}.mp4`);
     try {
-      const cmd = [
-        `"${RUTA_YTDLP}"`, '-f', 'mp4/best', '--no-playlist',
-        '--retries', '5', '--socket-timeout', '30', '--no-check-certificates',
-        ARGS_FFMPEG, '-o', `"${archivo}"`, `"${url}"`
-      ].filter(Boolean).join(' ');
+      const cmd = [`"${RUTA_YTDLP}"`, '-f', 'mp4/best', '--no-playlist', '--retries', '5', '--socket-timeout', '30', '--no-check-certificates', ARGS_FFMPEG, '-o', `"${archivo}"`, `"${url}"`].filter(Boolean).join(' ');
       await ejecutarComando(cmd, { timeout: 120000 });
       if (!fs.existsSync(archivo) || fs.statSync(archivo).size <= 5000) throw new Error('Archivo vacío o no descargado');
-      for (let i = 1; i < intento; i++) {
-        const viejo = path.join(__dirname, `temp_tiktok_${idTemp}_${i}.mp4`);
-        if (fs.existsSync(viejo)) fs.unlinkSync(viejo);
-      }
+      for (let i = 1; i < intento; i++) { const viejo = path.join(__dirname, `temp_tiktok_${idTemp}_${i}.mp4`); if (fs.existsSync(viejo)) fs.unlinkSync(viejo); }
       return archivo;
     } catch (err) {
       if (fs.existsSync(archivo)) fs.unlinkSync(archivo);
@@ -117,21 +108,15 @@ async function descargarVideoTiktokConAPI(url) {
         return { tipo: 'video_url', url: enlaceLimpio };
       }
       throw new Error('La API no devolvió ni video ni imágenes');
-    } catch (err) {
-      if (intento < MAX_INTENTOS_TIKTOK) await new Promise(r => setTimeout(r, 3000));
-    }
+    } catch (err) { if (intento < MAX_INTENTOS_TIKTOK) await new Promise(r => setTimeout(r, 3000)); }
   }
   throw new Error('La API de respaldo también falló');
 }
 
 async function descargarVideoTiktok(url) {
   if (esProbablementeSlideshow(url)) return await descargarVideoTiktokConAPI(url);
-  try {
-    const archivo = await descargarVideoTiktokConYtDlp(url);
-    return { tipo: 'archivo', ruta: archivo };
-  } catch (err) {
-    return await descargarVideoTiktokConAPI(url);
-  }
+  try { const archivo = await descargarVideoTiktokConYtDlp(url); return { tipo: 'archivo', ruta: archivo }; }
+  catch (err) { return await descargarVideoTiktokConAPI(url); }
 }
 
 async function enviarResultadoTiktok(sock, jidDestino, resultado) {
@@ -139,29 +124,24 @@ async function enviarResultadoTiktok(sock, jidDestino, resultado) {
   if (resultado.tipo === 'archivo') { await sock.sendMessage(jidDestino, { video: { url: resultado.ruta }, caption: captionLimpio }); return; }
   if (resultado.tipo === 'video_url') { await sock.sendMessage(jidDestino, { video: { url: resultado.url }, caption: captionLimpio }); return; }
   if (resultado.tipo === 'slideshow') {
-    await sock.sendMessage(jidDestino, { text: `📸 Esto es una publicación de fotos — te mando ${resultado.imagenes.length} imagen(es) 💕` });
+    await sock.sendMessage(jidDestino, { text: `📸 Publicación de fotos — te mando ${resultado.imagenes.length} imagen(es) 💕` });
     let enviadas = 0;
-    for (const imgUrl of resultado.imagenes.slice(0, 15)) {
-      try { await sock.sendMessage(jidDestino, { image: { url: imgUrl } }); enviadas++; } catch (err) {}
-    }
+    for (const imgUrl of resultado.imagenes.slice(0, 15)) { try { await sock.sendMessage(jidDestino, { image: { url: imgUrl } }); enviadas++; } catch (err) {} }
     if (resultado.audio) { try { await sock.sendMessage(jidDestino, { audio: { url: resultado.audio }, mimetype: 'audio/mpeg' }); } catch (err) {} }
-    if (enviadas === 0) await sock.sendMessage(jidDestino, { text: '💔 No pude enviar ninguna de las imágenes, puede que el enlace haya vencido.' });
+    if (enviadas === 0) await sock.sendMessage(jidDestino, { text: '💔 No pude enviar ninguna imagen, el enlace pudo haber vencido.' });
   }
 }
 
 async function manejarComandoTiktok(sock, jidDestino, enlace) {
   if (!ENLACE_TIKTOK.test(enlace)) { await sock.sendMessage(jidDestino, { text: '💕 Uso: /tiktok <enlace>' }); return; }
-  await sock.sendMessage(jidDestino, { text: '🎬 ¡Claro que sí! Dame un momentito 💖' });
+  await sock.sendMessage(jidDestino, { text: '🎬 ¡Claro! Dame un momentito 💖' });
   let rutaTemporal = null;
   try {
     const resultado = await descargarVideoTiktok(enlace);
     if (resultado.tipo === 'archivo') rutaTemporal = resultado.ruta;
     await enviarResultadoTiktok(sock, jidDestino, resultado);
-  } catch (err) {
-    await sock.sendMessage(jidDestino, { text: '💔 No pude bajar ese contenido, intenta con otro enlace 🙏💖' });
-  } finally {
-    if (rutaTemporal && fs.existsSync(rutaTemporal)) { try { fs.unlinkSync(rutaTemporal); } catch {} }
-  }
+  } catch (err) { await sock.sendMessage(jidDestino, { text: '💔 No pude bajar ese contenido, intenta con otro enlace 🙏' }); }
+  finally { if (rutaTemporal && fs.existsSync(rutaTemporal)) { try { fs.unlinkSync(rutaTemporal); } catch {} } }
 }
 
 const ENLACE_YOUTUBE = /(?:https?:\/\/)?(?:www\.|m\.|music\.)?(?:youtube\.com\/(?:watch\?v=|shorts\/)|youtu\.be\/)[^\s]+/i;
@@ -180,7 +160,7 @@ async function descargarAudioYoutube(url) {
   const respuesta = await fetch(`${URL_DESCARGAS}/audio?${parametros.toString()}`);
   if (!respuesta.ok) throw new Error(`El descargador respondió ${respuesta.status}: ${String(await extraerDetalleError(respuesta)).slice(0, 300)}`);
   const buffer = Buffer.from(await respuesta.arrayBuffer());
-  if (buffer.length < 5000) throw new Error('El descargador devolvió un archivo demasiado pequeño.');
+  if (buffer.length < 5000) throw new Error('Archivo demasiado pequeño.');
   const rutaTemporal = path.join(__dirname, `temp_youtube_${Date.now()}.m4a`);
   fs.writeFileSync(rutaTemporal, buffer);
   return rutaTemporal;
@@ -188,16 +168,11 @@ async function descargarAudioYoutube(url) {
 
 async function manejarComandoYoutube(sock, jidDestino, enlace) {
   if (!ENLACE_YOUTUBE.test(enlace)) { await sock.sendMessage(jidDestino, { text: '🎵 Uso: /youtube <enlace>' }); return; }
-  await sock.sendMessage(jidDestino, { text: '🎧 Dame un momentito, estoy descargando el audio...' });
+  await sock.sendMessage(jidDestino, { text: '🎧 Descargando el audio...' });
   let rutaTemporal = null;
-  try {
-    rutaTemporal = await descargarAudioYoutube(enlace);
-    await sock.sendMessage(jidDestino, { audio: { url: rutaTemporal }, mimetype: 'audio/mp4', ptt: false });
-  } catch (err) {
-    await sock.sendMessage(jidDestino, { text: `💔 No pude descargar ese audio. Detalle: ${err.message.slice(0, 150)}` });
-  } finally {
-    if (rutaTemporal && fs.existsSync(rutaTemporal)) { try { fs.unlinkSync(rutaTemporal); } catch {} }
-  }
+  try { rutaTemporal = await descargarAudioYoutube(enlace); await sock.sendMessage(jidDestino, { audio: { url: rutaTemporal }, mimetype: 'audio/mp4', ptt: false }); }
+  catch (err) { await sock.sendMessage(jidDestino, { text: `💔 No pude descargar ese audio. Detalle: ${err.message.slice(0, 150)}` }); }
+  finally { if (rutaTemporal && fs.existsSync(rutaTemporal)) { try { fs.unlinkSync(rutaTemporal); } catch {} } }
 }
 
 async function descargarVideoYoutube(url) {
@@ -206,7 +181,7 @@ async function descargarVideoYoutube(url) {
   const respuesta = await fetch(`${URL_DESCARGAS}/video?${parametros.toString()}`);
   if (!respuesta.ok) throw new Error(`El descargador respondió ${respuesta.status}: ${String(await extraerDetalleError(respuesta)).slice(0, 300)}`);
   const buffer = Buffer.from(await respuesta.arrayBuffer());
-  if (buffer.length < 5000) throw new Error('El descargador devolvió un archivo demasiado pequeño.');
+  if (buffer.length < 5000) throw new Error('Archivo demasiado pequeño.');
   const rutaTemporal = path.join(__dirname, `temp_youtube_video_${Date.now()}.mp4`);
   fs.writeFileSync(rutaTemporal, buffer);
   return rutaTemporal;
@@ -214,16 +189,11 @@ async function descargarVideoYoutube(url) {
 
 async function manejarComandoYoutubeVideo(sock, jidDestino, enlace) {
   if (!ENLACE_YOUTUBE.test(enlace)) { await sock.sendMessage(jidDestino, { text: '🎬 Uso: /youtubevideo <enlace>' }); return; }
-  await sock.sendMessage(jidDestino, { text: '🎬 Dame un momentito, estoy descargando el video...' });
+  await sock.sendMessage(jidDestino, { text: '🎬 Descargando el video...' });
   let rutaTemporal = null;
-  try {
-    rutaTemporal = await descargarVideoYoutube(enlace);
-    await sock.sendMessage(jidDestino, { video: { url: rutaTemporal }, caption: '🎥 ¡Aquí está tu video! ✨' });
-  } catch (err) {
-    await sock.sendMessage(jidDestino, { text: `💔 No pude descargar ese video. Detalle: ${err.message.slice(0, 150)}` });
-  } finally {
-    if (rutaTemporal && fs.existsSync(rutaTemporal)) { try { fs.unlinkSync(rutaTemporal); } catch {} }
-  }
+  try { rutaTemporal = await descargarVideoYoutube(enlace); await sock.sendMessage(jidDestino, { video: { url: rutaTemporal }, caption: '🎥 ¡Aquí está tu video! ✨' }); }
+  catch (err) { await sock.sendMessage(jidDestino, { text: `💔 No pude descargar ese video. Detalle: ${err.message.slice(0, 150)}` }); }
+  finally { if (rutaTemporal && fs.existsSync(rutaTemporal)) { try { fs.unlinkSync(rutaTemporal); } catch {} } }
 }
 
 async function descargarFacebook(url, tipo) {
@@ -232,7 +202,7 @@ async function descargarFacebook(url, tipo) {
   const respuesta = await fetch(`${URL_DESCARGAS}/facebook?${parametros.toString()}`);
   if (!respuesta.ok) throw new Error(`El descargador respondió ${respuesta.status}: ${String(await extraerDetalleError(respuesta)).slice(0, 300)}`);
   const buffer = Buffer.from(await respuesta.arrayBuffer());
-  if (buffer.length < 5000) throw new Error('El descargador devolvió un archivo demasiado pequeño.');
+  if (buffer.length < 5000) throw new Error('Archivo demasiado pequeño.');
   const extension = tipo === 'audio' ? 'm4a' : 'mp4';
   const rutaTemporal = path.join(__dirname, `temp_facebook_${tipo}_${Date.now()}.${extension}`);
   fs.writeFileSync(rutaTemporal, buffer);
@@ -247,11 +217,8 @@ async function manejarComandoFacebook(sock, jidDestino, enlace, tipo) {
     rutaTemporal = await descargarFacebook(enlace, tipo);
     if (tipo === 'audio') await sock.sendMessage(jidDestino, { audio: { url: rutaTemporal }, mimetype: 'audio/mp4', ptt: false });
     else await sock.sendMessage(jidDestino, { video: { url: rutaTemporal }, caption: '🎥 ¡Aquí está tu video! ✨' });
-  } catch (err) {
-    await sock.sendMessage(jidDestino, { text: `💔 No pude descargar eso de Facebook. Detalle: ${err.message.slice(0, 150)}` });
-  } finally {
-    if (rutaTemporal && fs.existsSync(rutaTemporal)) { try { fs.unlinkSync(rutaTemporal); } catch {} }
-  }
+  } catch (err) { await sock.sendMessage(jidDestino, { text: `💔 No pude descargar eso de Facebook. Detalle: ${err.message.slice(0, 150)}` }); }
+  finally { if (rutaTemporal && fs.existsSync(rutaTemporal)) { try { fs.unlinkSync(rutaTemporal); } catch {} } }
 }
 
 function obtenerTextoMensaje(msg) {
@@ -271,18 +238,16 @@ const MODELO_PRINCIPAL = 'gemini-3.6-flash';
 const MODELO_RESPALDO = 'gemini-3.6-flash';
 const MODELO_RESPALDO2 = 'gemini-3.6-flash';
 
-const MODELOS_IMAGEN_A_PROBAR = [
-  'gemini-2.5-flash-image',
-  'gemini-2.5-flash-image-preview',
-  'gemini-2.0-flash-preview-image-generation',
-  'gemini-2.0-flash-exp-image-generation',
-  'imagen-4.0-generate-001'
-];
+// ⚠️ Según tus logs, este es el ÚNICO modelo de imagen que existe de verdad
+// para tu API — el resto de nombres que probábamos antes daban 404 (no
+// existen). Si vuelve a fallar con 429, es CUOTA/FACTURACIÓN de tu cuenta,
+// no un bug — revisa https://ai.google.dev/gemini-api/docs/rate-limits
+const MODELO_IMAGEN = 'gemini-2.5-flash-image';
 
 const CODIGO_DUEÑO = '2927760128';
 const NOMBRE_BOT = 'Anzy';
-const CREADOR = 'Albert Oficial';
-const VERSION_BOT = '3.1.0';
+const CREADOR = 'Albert Drak';
+const VERSION_BOT = '3.2.0';
 const TU_NUMERO = '51996399291';
 const NUMERO_BOT_VINCULADO = '51975922748';
 const JID_DUEÑO = `${TU_NUMERO}@s.whatsapp.net`;
@@ -300,39 +265,37 @@ const TEXTO_AYUDA = `*COMANDOS · ${NOMBRE_BOT}*
 
 🧠 *Inteligencia Artificial*
 • Mencióname, o escribe /anzy <pregunta>
-• Responde/cita un mensaje y mencióname para que lo lea también
+• Cita un audio, mencióname y pídeme algo sobre él 🎙️
 • /imagen <descripción> — genero una imagen con IA
 
 🎭 *Modos de personalidad*
-• /novia on · /novia off — modo cariñoso y coqueto
-• /amiga on · /amiga off — modo amiga cercana, relajada y con chispa
+• /novia on · /novia off
+• /amiga on · /amiga off
 
 🎉 *Descargas*
-• /tiktok <enlace> — video o fotos de TikTok sin marca de agua
-• /youtube <enlace> — audio de YouTube 🎧
-• /youtubevideo <enlace> — video de YouTube 🎬
-• /facebook <enlace> — video de Facebook
-• /facebookaudio <enlace> — audio de un video de Facebook
+• /tiktok <enlace>
+• /youtube <enlace> — audio 🎧
+• /youtubevideo <enlace> — video 🎬
+• /facebook <enlace> — video
+• /facebookaudio <enlace> — audio
 
 🎉 *Diversión y utilidades*
-• /frase — frase random
-• /perfil @usuario — actividad en el grupo
+• /frase
+• /perfil @usuario
 
 👑 *Administración de grupo*
-• /promover @usuario — lo hace admin
-• /degradar @usuario — le quita admin
-• /todos <mensaje> — etiqueta a todos
-• /cerrar · /abrir — controla quién escribe
-• /recordatorio <tiempo><S|M|H> <texto> — ej: /recordatorio 30M reunión
-• /ranking — top de más activas del grupo
+• /promover · /degradar @usuario
+• /todos <mensaje>
+• /cerrar · /abrir
+• /recordatorio <tiempo><S|M|H> <texto>
+• /ranking
 
 📋 *Información*
 • /info · /creador
-• /comando anzy — ver esta lista
+• /comando anzy
 
 🗂️ *Memoria personal*
-• /recordar — qué recuerda de ti
-• /olvidarme — borra su memoria de ti`;
+• /recordar · /olvidarme`;
 
 const PALABRAS_CRISIS = ['quiero morir', 'no quiero vivir', 'suicidar', 'suicidio', 'matarme', 'quitarme la vida', 'hacerme daño', 'autolesion', 'cortarme'];
 function esMensajeDeCrisis(texto) { return PALABRAS_CRISIS.some(p => texto.toLowerCase().includes(p)); }
@@ -361,7 +324,7 @@ IMPORTANTE: solo eres una asistente conversacional. No ejecutas acciones sobre e
 
 CÓMO ERES:
 ✅ Amable, femenina, empática, positiva.
-✅ EXPLÍCITA y CLARA: explica bien el "por qué" y el "cómo".
+✅ EXPLÍCITA y CLARA.
 ✅ Emojis con soltura pero sin exagerar (2 a 4).
 ✅ Hablas como una creación de ${CREADOR}.
 
@@ -392,9 +355,7 @@ let memoriaPersistente = cargarMemoria();
 let guardadoPendiente = null;
 function guardarMemoria() {
   if (guardadoPendiente) clearTimeout(guardadoPendiente);
-  guardadoPendiente = setTimeout(() => {
-    fs.writeFile(ARCHIVO_MEMORIA, JSON.stringify(memoriaPersistente), (err) => { if (err) console.log('⚠️ Error guardando memoria:', err.message); });
-  }, 2000);
+  guardadoPendiente = setTimeout(() => { fs.writeFile(ARCHIVO_MEMORIA, JSON.stringify(memoriaPersistente), (err) => { if (err) console.log('⚠️ Error guardando memoria:', err.message); }); }, 2000);
 }
 function agregarAMemoriaCorta(jidUsuario, texto, respuesta) {
   if (!memoriaPersistente[jidUsuario]) memoriaPersistente[jidUsuario] = [];
@@ -468,81 +429,89 @@ async function generarRespuestaIA(prompt, notasExtra, jidChat, jidUsuario) {
   if (cuotaCasiAgotada()) reglasFinales += `\n\n⚠️ Casi al límite del día — sé más breve.`;
 
   const intentar = async (cliente) => {
-    const res = await cliente.ai.models.generateContent({
-      model: cliente.modelo, contents: prompt,
-      config: { systemInstruction: reglasFinales, safetySettings: SAFETY_SETTINGS, maxOutputTokens: MAX_TOKENS_RESPUESTA }
-    });
+    const res = await cliente.ai.models.generateContent({ model: cliente.modelo, contents: prompt, config: { systemInstruction: reglasFinales, safetySettings: SAFETY_SETTINGS, maxOutputTokens: MAX_TOKENS_RESPUESTA } });
     return res.text;
   };
-
-  for (const cliente of CLIENTES_IA) {
-    try { const r = await intentar(cliente); registrarUsoIA(); return r; }
-    catch (err) { console.log(`⚠️ Falló IA (${cliente.nombre}):`, err.message); }
-  }
+  for (const cliente of CLIENTES_IA) { try { const r = await intentar(cliente); registrarUsoIA(); return r; } catch (err) { console.log(`⚠️ Falló IA (${cliente.nombre}):`, err.message); } }
   if (CLIENTES_IA.length > 0) { await new Promise(r => setTimeout(r, 400)); const r = await intentar(CLIENTES_IA[0]); registrarUsoIA(); return r; }
   throw new Error('No hay ningún token de IA configurado');
 }
 
-// ── Genera un mensaje corto y VARIADO con la IA (nunca el mismo texto dos
-// veces), con lista de respaldo por si la IA falla. ──────────────────────────
-const FRASES_AVISO_SALIDA_FALLBACK = [
-  'Ay, mira quién se fue del grupo... y resulta que sí lo tenía fichado en el clan 👀',
-  'Se me acaba de salir alguien del grupo y ¡sorpresa! está en mi lista del clan 📋',
-  'Alguien se despidió del grupo sin avisar, pero yo sí lo tenía registrado 💅'
-];
-const FRASES_CONFIRMACION_ELIMINACION_FALLBACK = [
-  'Listo, su registro ya no está en la lista del clan 🗑️',
-  'Su ficha ya fue eliminada de la lista del clan 💔',
-  'Ya quité su registro de la lista, todo limpio 📋✨'
-];
+// ── ENTENDER AUDIOS — se cita un audio + se menciona al bot ────────────────
+// ⚠️ Requiere que tu modelo/clave soporte entrada de audio (multimodal). Si
+// falla, revisa el error en logs igual que hicimos con las imágenes.
+function extraerAudioCitado(msg) {
+  const citado = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+  if (!citado || !citado.audioMessage) return null;
+  return citado.audioMessage;
+}
+
+async function descargarAudioCitado(audioMessageNode) {
+  const stream = await downloadContentFromMessage(audioMessageNode, 'audio');
+  let buffer = Buffer.from([]);
+  for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
+  return buffer;
+}
+
+async function generarRespuestaIAConAudio(bufferAudio, mimetype, promptTexto, notasExtra, jidChat, jidUsuario) {
+  let reglasFinales = REGLAS_IA_BASE;
+  const clave = claveModo(jidChat, jidUsuario);
+  if (modoNovia.get(clave)) reglasFinales += REGLAS_MODO_NOVIA;
+  else if (modoAmiga.get(clave)) reglasFinales += REGLAS_MODO_AMIGA;
+  if (notasExtra) reglasFinales += `\n\nCONTEXTO ADICIONAL: ${notasExtra}`;
+
+  const contenido = [{ role: 'user', parts: [
+    { inlineData: { mimeType: mimetype || 'audio/ogg', data: bufferAudio.toString('base64') } },
+    { text: promptTexto || 'Escucha este audio y respóndeme sobre su contenido.' }
+  ] }];
+
+  for (const cliente of CLIENTES_IA) {
+    try {
+      const res = await cliente.ai.models.generateContent({ model: cliente.modelo, contents: contenido, config: { systemInstruction: reglasFinales, safetySettings: SAFETY_SETTINGS, maxOutputTokens: MAX_TOKENS_RESPUESTA } });
+      registrarUsoIA();
+      return res.text;
+    } catch (err) { console.log(`⚠️ Falló IA con audio (${cliente.nombre}):`, err.message); }
+  }
+  throw new Error('Ningún modelo pudo procesar el audio.');
+}
+
+// ── Genera mensajes cortos VARIADOS (nunca el mismo texto dos veces) ────────
+const FRASES_AVISO_SALIDA_FALLBACK = ['Ay, mira quién se fue del grupo... y sí lo tenía fichado en el clan 👀', 'Se me salió alguien del grupo y ¡sorpresa! está en mi lista 📋', 'Alguien se despidió del grupo, pero yo sí lo tenía registrado 💅'];
+const FRASES_CONFIRMACION_ELIMINACION_FALLBACK = ['Listo, su registro ya no está en la lista del clan 🗑️', 'Su ficha ya fue eliminada de la lista 💔', 'Ya quité su registro, todo limpio 📋✨'];
 
 async function generarMensajeVariadoIA(instruccion, fallbackLista) {
   try {
-    const notas = 'Genera SOLO el mensaje pedido, sin comillas ni explicaciones extra, máximo 2 líneas, con tono femenino cálido.';
-    const respuesta = await generarRespuestaIA(instruccion, notas, 'sistema_interno', 'sistema_interno');
-    const limpio = (respuesta || '').trim();
-    return limpio || fallbackLista[Math.floor(Math.random() * fallbackLista.length)];
-  } catch (err) {
-    return fallbackLista[Math.floor(Math.random() * fallbackLista.length)];
-  }
+    const respuesta = await generarRespuestaIA(instruccion, 'Genera SOLO el mensaje pedido, sin comillas, máximo 2 líneas, tono femenino cálido.', 'sistema_interno', 'sistema_interno');
+    return (respuesta || '').trim() || fallbackLista[Math.floor(Math.random() * fallbackLista.length)];
+  } catch (err) { return fallbackLista[Math.floor(Math.random() * fallbackLista.length)]; }
 }
 
+// ── GENERACIÓN DE IMÁGENES — un solo modelo real, con diagnóstico claro ────
 async function generarImagenIA(prompt) {
   for (const cliente of CLIENTES_IA) {
-    for (const modeloImagen of MODELOS_IMAGEN_A_PROBAR) {
-      try {
-        const res = await cliente.ai.models.generateContent({
-          model: modeloImagen, contents: prompt, config: { responseModalities: ['IMAGE', 'TEXT'] }
-        });
-        const partes = res?.candidates?.[0]?.content?.parts || [];
-        for (const parte of partes) {
-          if (parte.inlineData?.data) {
-            console.log(`✅ Imagen generada con modelo: ${modeloImagen} (cliente ${cliente.nombre})`);
-            return Buffer.from(parte.inlineData.data, 'base64');
-          }
-        }
-        console.log(`⚠️ ${modeloImagen} (${cliente.nombre}) respondió pero SIN datos de imagen. Revisa si tu clave tiene habilitada la generación de imágenes.`);
-      } catch (err) {
-        console.log(`⚠️ Falló ${modeloImagen} (${cliente.nombre}): ${err.message.slice(0, 200)}`);
-      }
+    try {
+      const res = await cliente.ai.models.generateContent({ model: MODELO_IMAGEN, contents: prompt, config: { responseModalities: ['IMAGE', 'TEXT'] } });
+      const partes = res?.candidates?.[0]?.content?.parts || [];
+      for (const parte of partes) { if (parte.inlineData?.data) { console.log(`✅ Imagen generada (cliente ${cliente.nombre})`); return { buffer: Buffer.from(parte.inlineData.data, 'base64') }; } }
+      return { error: 'sin_datos' };
+    } catch (err) {
+      console.log(`⚠️ Falló generación de imagen (${cliente.nombre}): ${err.message.slice(0, 250)}`);
+      if (/429|quota|exceeded/i.test(err.message || '')) return { error: 'cuota' };
     }
   }
-  return null;
+  return { error: 'ninguno' };
 }
 
 async function comandoImagen(sock, jidDestino, descripcion) {
-  if (!descripcion || descripcion.trim().length < 2) {
-    await sock.sendMessage(jidDestino, { text: 'Uso: /imagen <descripción>\nEj: /imagen un logo minimalista de un zorro' });
+  if (!descripcion || descripcion.trim().length < 2) { await sock.sendMessage(jidDestino, { text: 'Uso: /imagen <descripción>' }); return; }
+  await sock.sendMessage(jidDestino, { text: '🎨 Dame un segundito, la estoy creando...' });
+  const resultado = await generarImagenIA(descripcion);
+  if (resultado.buffer) { await sock.sendMessage(jidDestino, { image: resultado.buffer, caption: '✨ ¡Aquí tienes!' }); return; }
+  if (resultado.error === 'cuota') {
+    await sock.sendMessage(jidDestino, { text: '💔 Se agotó la cuota de generación de imágenes de esta cuenta de Google AI por ahora. Esto se resuelve revisando el plan/facturación de la API, no es un error del bot.' });
     return;
   }
-  await sock.sendMessage(jidDestino, { text: '🎨 Dame un segundito, la estoy creando...' });
-  try {
-    const buffer = await generarImagenIA(descripcion);
-    if (buffer) await sock.sendMessage(jidDestino, { image: buffer, caption: '✨ ¡Aquí tienes!' });
-    else await sock.sendMessage(jidDestino, { text: '💔 No pude generar la imagen esta vez — revisa los logs de Render para más detalle.' });
-  } catch (err) {
-    await sock.sendMessage(jidDestino, { text: '💔 No pude generar la imagen, intenta de nuevo en un momento.' });
-  }
+  await sock.sendMessage(jidDestino, { text: '💔 No pude generar la imagen esta vez — revisa los logs de Render para más detalle.' });
 }
 
 function obtenerIdentificadoresBot(sock) {
@@ -567,18 +536,12 @@ function debeResponderIA(texto, msg, identificadoresBot) {
   return (texto.trim().split(/\s+/)[0] || '').toLowerCase() === COMANDO_LLAMADA_IA;
 }
 
-function normalizarBusqueda(texto) {
-  return (texto || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
-}
+function normalizarBusqueda(texto) { return (texto || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim(); }
 
 function detectarSolicitudInfoPorNombre(texto) {
   const t = texto.trim();
   if (!/\b(informaci[oó]n|informe|info|datos|ficha|perfil)\b/i.test(t)) return null;
-  let resto = t
-    .replace(/^.*?\b(?:del|de la|de|sobre)\s+integrante\b/i, '')
-    .replace(/^.*?\b(?:informaci[oó]n|informe|info|datos|ficha|perfil)\b/i, '')
-    .replace(/^\s*(?:del|de la|de|del clan|de|sobre|los|las|el|la)\s+/i, '')
-    .trim().replace(/[.?!]+$/, '');
+  let resto = t.replace(/^.*?\b(?:del|de la|de|sobre)\s+integrante\b/i, '').replace(/^.*?\b(?:informaci[oó]n|informe|info|datos|ficha|perfil)\b/i, '').replace(/^\s*(?:del|de la|de|del clan|de|sobre|los|las|el|la)\s+/i, '').trim().replace(/[.?!]+$/, '');
   if (!resto || resto.length < 2 || resto.length > 45) return null;
   return resto;
 }
@@ -589,59 +552,74 @@ function extraerTextoCitado(msg) {
   return citado.conversation || citado.extendedTextMessage?.text || null;
 }
 
-function normalizarParticipante(participanteRaw) {
-  if (typeof participanteRaw === 'string') return { jid: participanteRaw, numero: participanteRaw.split('@')[0] };
-  const jid = participanteRaw?.id || participanteRaw?.jid || participanteRaw?.phoneNumber || '';
-  const numero = (participanteRaw?.phoneNumber || jid || '').split('@')[0];
-  return { jid, numero };
-}
-
-// ── VALIDACIÓN DE NÚMEROS ────────────────────────────────────────────────
-// Un número de teléfono real (formato internacional E.164) tiene entre 8 y
-// 15 dígitos. Si algo entrega más (como IDs internos de WhatsApp mal
-// interpretados: +183910339292849202), se recorta a los últimos 15 dígitos
-// como salvaguarda extra.
+// ── CORRECCIÓN DE NÚMEROS ────────────────────────────────────────────────
+// Un número real de WhatsApp casi nunca pasa de 12-13 dígitos con código de
+// país incluido. Los identificadores internos (LID) que a veces WhatsApp usa
+// en vez del número real suelen ser mucho más largos (15-16 dígitos) — por
+// eso salían números "imposibles". Esta función distingue ambos casos.
 function numeroEsValido(numero) { return !!numero && numero.length >= 8 && numero.length <= 15; }
+function esNumeroTelefonicoProbable(numero) { return !!numero && numero.length >= 8 && numero.length <= 13; }
 
 function extraerNumero(jid) {
   if (!jid) return '';
   const parteSinServidor = String(jid).split('@')[0].split(':')[0];
-  let numero = parteSinServidor.replace(/[^0-9]/g, '');
-  if (numero.length > 15) numero = numero.slice(-15);
-  return numero;
+  return parteSinServidor.replace(/[^0-9]/g, '');
+}
+
+// PRIORIZA el número real (phoneNumber) que WhatsApp entrega directo en el
+// propio evento — esto es lo más confiable, sobre todo cuando alguien acaba
+// de salir del grupo (ya no se le puede buscar en la lista de participantes).
+function normalizarParticipante(participanteRaw) {
+  if (typeof participanteRaw === 'string') return { jid: participanteRaw, numero: extraerNumero(participanteRaw) };
+  const jid = participanteRaw?.id || participanteRaw?.jid || '';
+  const numeroReal = [participanteRaw?.phoneNumber, participanteRaw?.jid].filter(Boolean).map(extraerNumero).find(n => esNumeroTelefonicoProbable(n));
+  return { jid, numero: numeroReal || extraerNumero(jid) };
+}
+
+// Caché: una vez que vemos, en cualquier momento, tanto el LID como el
+// número real de alguien (mientras siga en el grupo), lo recordamos — así
+// si más tarde sale del grupo y solo tenemos su LID, igual sabemos su
+// número real.
+const MAPA_LID_A_NUMERO = new Map();
+function actualizarCacheLid(metadata) {
+  if (!metadata || !Array.isArray(metadata.participants)) return;
+  for (const p of metadata.participants) {
+    const numeroReal = [p.phoneNumber, p.jid].filter(Boolean).map(extraerNumero).find(n => esNumeroTelefonicoProbable(n));
+    if (!numeroReal) continue;
+    for (const posibleLid of [p.id, p.lid].filter(Boolean).map(extraerNumero)) {
+      if (posibleLid && posibleLid !== numeroReal) MAPA_LID_A_NUMERO.set(posibleLid, numeroReal);
+    }
+  }
 }
 
 async function resolverNumeroReal(sock, jidChat, jidObjetivo) {
   const numeroDirecto = extraerNumero(jidObjetivo);
-  if (!jidChat || !jidChat.endsWith('@g.us')) return numeroDirecto;
-  try {
-    const metadata = await sock.groupMetadata(jidChat);
-    const participante = metadata.participants.find(p => {
-      const candidatos = [p.id, p.jid, p.lid, p.phoneNumber].filter(Boolean).map(extraerNumero);
-      return candidatos.includes(numeroDirecto);
-    });
-    if (participante) {
-      const candidatoReal = [participante.phoneNumber, participante.id, participante.jid]
-        .filter(Boolean).map(extraerNumero).find(n => numeroEsValido(n));
-      if (candidatoReal) return candidatoReal;
-    }
-  } catch (err) {}
-  return numeroDirecto;
+  if (esNumeroTelefonicoProbable(numeroDirecto)) return numeroDirecto;
+  if (MAPA_LID_A_NUMERO.has(numeroDirecto)) return MAPA_LID_A_NUMERO.get(numeroDirecto);
+  if (jidChat && jidChat.endsWith('@g.us')) {
+    try {
+      const metadata = await sock.groupMetadata(jidChat);
+      actualizarCacheLid(metadata);
+      const participante = metadata.participants.find(p => [p.id, p.jid, p.lid, p.phoneNumber].filter(Boolean).map(extraerNumero).includes(numeroDirecto));
+      if (participante) {
+        const candidatoReal = [participante.phoneNumber, participante.id, participante.jid].filter(Boolean).map(extraerNumero).find(n => esNumeroTelefonicoProbable(n));
+        if (candidatoReal) return candidatoReal;
+      }
+    } catch (err) {}
+    if (MAPA_LID_A_NUMERO.has(numeroDirecto)) return MAPA_LID_A_NUMERO.get(numeroDirecto);
+  }
+  return null; // no se pudo determinar con certeza — mejor no mostrar nada que mostrar basura
 }
 
 function esPropietario(numero) { return numero === TU_NUMERO; }
-const propietariosVerificados = new Set(); // se llena también desde GitHub al iniciar
+const propietariosVerificados = new Set();
 const pendientesPropietario = new Map();
 
-function esPropietarioEfectivo(jid) {
-  if (!jid) return false;
-  const numero = extraerNumero(jid);
-  return esPropietario(numero) || propietariosVerificados.has(numero);
-}
+function esPropietarioEfectivo(jid) { if (!jid) return false; const numero = extraerNumero(jid); return esPropietario(numero) || propietariosVerificados.has(numero); }
 
 async function esPropietarioContexto(sock, jidChat, jidUsuario) {
   const numero = await resolverNumeroReal(sock, jidChat, jidUsuario);
-  return esPropietario(numero) || propietariosVerificados.has(numero);
+  return esPropietario(numero) || (numero && propietariosVerificados.has(numero));
 }
 
 function buscarConteoEnMapa(mapa, jid) {
@@ -658,16 +636,11 @@ let SILENCIADOS = cargarSilenciados();
 let guardadoSilenciadosPendiente = null;
 function guardarSilenciados() {
   if (guardadoSilenciadosPendiente) clearTimeout(guardadoSilenciadosPendiente);
-  guardadoSilenciadosPendiente = setTimeout(() => {
-    fs.writeFile(ARCHIVO_SILENCIADOS, JSON.stringify([...SILENCIADOS]), (err) => { if (err) console.log('⚠️ Error guardando silenciados:', err.message); });
-  }, 1000);
+  guardadoSilenciadosPendiente = setTimeout(() => { fs.writeFile(ARCHIVO_SILENCIADOS, JSON.stringify([...SILENCIADOS]), (err) => { if (err) console.log('⚠️ Error guardando silenciados:', err.message); }); }, 1000);
 }
 
 const NUMEROS_IGNORADOS = (process.env.NUMEROS_IGNORADOS || '').split(',').map(n => n.trim()).filter(Boolean);
-function esNumeroIgnorado(jid) {
-  const numero = extraerNumero(jid);
-  return NUMEROS_IGNORADOS.includes(numero) || SILENCIADOS.has(numero);
-}
+function esNumeroIgnorado(jid) { const numero = extraerNumero(jid); return NUMEROS_IGNORADOS.includes(numero) || SILENCIADOS.has(numero); }
 
 const NOMBRES_CONOCIDOS = new Map();
 function registrarNombreConocido(jid, pushName) { if (pushName) NOMBRES_CONOCIDOS.set(extraerNumero(jid), pushName); }
@@ -692,7 +665,7 @@ async function githubLeerIntegrantes() {
   const url = `${GITHUB_API_BASE}/repos/${GITHUB_REPO}/contents/${encodeURIComponent(GITHUB_RUTA_ARCHIVO)}?ref=${GITHUB_RAMA}`;
   const res = await fetch(url, { headers: { 'Authorization': `Bearer ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json' } });
   if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`No se pudo leer de GitHub (${res.status}): ${await res.text().catch(() => '')}`);
+  if (!res.ok) throw new Error(`No se pudo leer de GitHub (${res.status})`);
   const data = await res.json();
   githubShaActual = data.sha;
   return JSON.parse(Buffer.from(data.content, 'base64').toString('utf-8'));
@@ -703,7 +676,7 @@ async function githubGuardarIntegrantes(dataObjeto) {
   const body = { message: `Actualización de integrantes — ${new Date().toISOString()}`, content: Buffer.from(JSON.stringify(dataObjeto, null, 2)).toString('base64'), branch: GITHUB_RAMA };
   if (githubShaActual) body.sha = githubShaActual;
   const res = await fetch(url, { method: 'PUT', headers: { 'Authorization': `Bearer ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  if (!res.ok) throw new Error(`No se pudo guardar en GitHub (${res.status}): ${await res.text().catch(() => '')}`);
+  if (!res.ok) throw new Error(`No se pudo guardar en GitHub (${res.status})`);
   const data = await res.json();
   githubShaActual = data.content.sha;
 }
@@ -714,15 +687,14 @@ async function inicializarNubeIntegrantes() {
     const nube = await githubLeerIntegrantes();
     if (nube && typeof nube === 'object') { integrantesClan = nube; console.log('☁️ Integrantes cargados desde GitHub.'); }
     else { await githubGuardarIntegrantes(integrantesClan || {}); console.log('🆕 Archivo de integrantes creado en GitHub.'); }
-  } catch (err) { console.log('⚠️ No se pudo conectar con GitHub para integrantes:', err.message); }
+  } catch (err) { console.log('⚠️ No se pudo conectar con GitHub (integrantes):', err.message); }
 }
 
-// ── PROPIETARIO EN LA NUBE — persiste entre reinicios de Render ─────────────
 async function githubLeerPropietarios() {
   const url = `${GITHUB_API_BASE}/repos/${GITHUB_REPO}/contents/${encodeURIComponent(GITHUB_RUTA_PROPIETARIOS)}?ref=${GITHUB_RAMA}`;
   const res = await fetch(url, { headers: { 'Authorization': `Bearer ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json' } });
   if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`No se pudo leer propietarios de GitHub (${res.status}): ${await res.text().catch(() => '')}`);
+  if (!res.ok) throw new Error(`No se pudo leer propietarios de GitHub (${res.status})`);
   const data = await res.json();
   githubShaPropietarios = data.sha;
   return JSON.parse(Buffer.from(data.content, 'base64').toString('utf-8'));
@@ -733,48 +705,42 @@ async function githubGuardarPropietarios(lista) {
   const body = { message: `Propietarios actualizados — ${new Date().toISOString()}`, content: Buffer.from(JSON.stringify(lista, null, 2)).toString('base64'), branch: GITHUB_RAMA };
   if (githubShaPropietarios) body.sha = githubShaPropietarios;
   const res = await fetch(url, { method: 'PUT', headers: { 'Authorization': `Bearer ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  if (!res.ok) throw new Error(`No se pudo guardar propietarios en GitHub (${res.status}): ${await res.text().catch(() => '')}`);
+  if (!res.ok) throw new Error(`No se pudo guardar propietarios en GitHub (${res.status})`);
   const data = await res.json();
   githubShaPropietarios = data.content.sha;
 }
 
 async function inicializarNubePropietarios() {
-  if (!GITHUB_TOKEN || !GITHUB_REPO) { console.log('⚠️ Sin GitHub configurado — la verificación de propietario no persistirá entre reinicios.'); return; }
+  if (!GITHUB_TOKEN || !GITHUB_REPO) { console.log('⚠️ Sin GitHub configurado — /propietario no persistirá entre reinicios.'); return; }
   try {
     const nube = await githubLeerPropietarios();
     if (Array.isArray(nube)) { nube.forEach(n => propietariosVerificados.add(n)); console.log('☁️ Propietarios verificados cargados desde GitHub.'); }
     else { await githubGuardarPropietarios([...propietariosVerificados]); console.log('🆕 Archivo de propietarios creado en GitHub.'); }
-  } catch (err) { console.log('⚠️ No se pudo conectar con GitHub para propietarios:', err.message); }
+  } catch (err) { console.log('⚠️ No se pudo conectar con GitHub (propietarios):', err.message); }
 }
 
 let guardadoPropietariosPendiente = null;
 function guardarPropietariosEnNube() {
   if (!GITHUB_TOKEN || !GITHUB_REPO) return;
   if (guardadoPropietariosPendiente) clearTimeout(guardadoPropietariosPendiente);
-  guardadoPropietariosPendiente = setTimeout(async () => {
-    try { await githubGuardarPropietarios([...propietariosVerificados]); }
-    catch (err) { console.log('⚠️ Error guardando propietarios en GitHub:', err.message); }
-  }, 1500);
+  guardadoPropietariosPendiente = setTimeout(async () => { try { await githubGuardarPropietarios([...propietariosVerificados]); } catch (err) { console.log('⚠️ Error guardando propietarios en GitHub:', err.message); } }, 1500);
 }
 
 async function githubSubirFoto(rutaArchivo, bufferImagen) {
   const url = `${GITHUB_API_BASE}/repos/${GITHUB_REPO}/contents/${encodeURIComponent(rutaArchivo)}`;
   let shaExistente = null;
-  try {
-    const resInfo = await fetch(`${url}?ref=${GITHUB_RAMA}`, { headers: { 'Authorization': `Bearer ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json' } });
-    if (resInfo.ok) { const infoData = await resInfo.json(); shaExistente = infoData.sha; }
-  } catch (err) {}
+  try { const resInfo = await fetch(`${url}?ref=${GITHUB_RAMA}`, { headers: { 'Authorization': `Bearer ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json' } }); if (resInfo.ok) { const infoData = await resInfo.json(); shaExistente = infoData.sha; } } catch (err) {}
   const body = { message: `Foto actualizada — ${new Date().toISOString()}`, content: bufferImagen.toString('base64'), branch: GITHUB_RAMA };
   if (shaExistente) body.sha = shaExistente;
   const res = await fetch(url, { method: 'PUT', headers: { 'Authorization': `Bearer ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  if (!res.ok) throw new Error(`No se pudo subir la foto a GitHub (${res.status}): ${await res.text().catch(() => '')}`);
+  if (!res.ok) throw new Error(`No se pudo subir la foto a GitHub (${res.status})`);
 }
 
 async function githubDescargarFoto(rutaArchivo) {
   const url = `${GITHUB_API_BASE}/repos/${GITHUB_REPO}/contents/${encodeURIComponent(rutaArchivo)}?ref=${GITHUB_RAMA}`;
   const res = await fetch(url, { headers: { 'Authorization': `Bearer ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github+json' } });
   if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`No se pudo descargar la foto de GitHub (${res.status}): ${await res.text().catch(() => '')}`);
+  if (!res.ok) throw new Error(`No se pudo descargar la foto de GitHub (${res.status})`);
   const data = await res.json();
   return Buffer.from(data.content, 'base64');
 }
@@ -810,9 +776,7 @@ let registroMovimientos = cargarMovimientos();
 let guardadoMovimientosPendiente = null;
 function guardarMovimientos() {
   if (guardadoMovimientosPendiente) clearTimeout(guardadoMovimientosPendiente);
-  guardadoMovimientosPendiente = setTimeout(() => {
-    fs.writeFile(ARCHIVO_MOVIMIENTOS, JSON.stringify(registroMovimientos), (err) => { if (err) console.log('⚠️ Error guardando movimientos:', err.message); });
-  }, 1500);
+  guardadoMovimientosPendiente = setTimeout(() => { fs.writeFile(ARCHIVO_MOVIMIENTOS, JSON.stringify(registroMovimientos), (err) => { if (err) console.log('⚠️ Error guardando movimientos:', err.message); }); }, 1500);
 }
 
 const ETIQUETAS_MOVIMIENTO = {
@@ -823,21 +787,21 @@ const ETIQUETAS_MOVIMIENTO = {
 };
 
 const ACCIONES_BOT_RECIENTES = new Set();
-function marcarAccionBotReciente(jidGrupo, accion, jids) {
-  jids.forEach(jid => {
-    const clave = `${jidGrupo}:${accion}:${extraerNumero(jid)}`;
-    ACCIONES_BOT_RECIENTES.add(clave);
-    setTimeout(() => ACCIONES_BOT_RECIENTES.delete(clave), 10000);
-  });
-}
+function marcarAccionBotReciente(jidGrupo, accion, jids) { jids.forEach(jid => { const clave = `${jidGrupo}:${accion}:${extraerNumero(jid)}`; ACCIONES_BOT_RECIENTES.add(clave); setTimeout(() => ACCIONES_BOT_RECIENTES.delete(clave), 10000); }); }
 function accionFueDelBot(jidGrupo, accion, jid) { return ACCIONES_BOT_RECIENTES.has(`${jidGrupo}:${accion}:${extraerNumero(jid)}`); }
 
-async function registrarAccionAdmin(sock, jidGrupo, accionOriginal, jidEjecutor, jidsObjetivo, nombreGrupoTexto) {
+// ── Ahora acepta números YA CONOCIDOS (del propio evento) para no depender
+// de buscar en la lista de participantes cuando la persona ya se fue. ──────
+async function registrarAccionAdmin(sock, jidGrupo, accionOriginal, jidEjecutor, jidsObjetivo, nombreGrupoTexto, numerosConocidos) {
   let accion = accionOriginal;
   const numeroEjecutorReal = jidEjecutor ? await resolverNumeroReal(sock, jidGrupo, jidEjecutor) : null;
+  const listaObjetivos = jidsObjetivo || [];
   const objetivosReales = [];
-  for (const j of (jidsObjetivo || [])) objetivosReales.push(await resolverNumeroReal(sock, jidGrupo, j));
-  let objetivos = objetivosReales;
+  for (let i = 0; i < listaObjetivos.length; i++) {
+    const conocido = numerosConocidos && numerosConocidos[i];
+    objetivosReales.push(esNumeroTelefonicoProbable(conocido) ? conocido : await resolverNumeroReal(sock, jidGrupo, listaObjetivos[i]));
+  }
+  let objetivos = objetivosReales.filter(Boolean);
   if (numeroEjecutorReal && objetivos.length === 1 && objetivos[0] === numeroEjecutorReal) {
     if (accion === 'remove') accion = 'salio';
     if (accion === 'add') accion = 'se_unio';
@@ -854,22 +818,17 @@ function comandoFrase() { return FRASES_RANDOM[Math.floor(Math.random() * FRASES
 
 async function comandoRanking(sock, jidGrupo) {
   const mapa = contadorMensajesGrupo.get(jidGrupo);
-  if (!mapa || mapa.size === 0) return { texto: 'Aún no hay suficiente actividad para armar un ranking 📊', mentions: [] };
+  if (!mapa || mapa.size === 0) return { texto: 'Aún no hay suficiente actividad 📊', mentions: [] };
   const ordenado = [...mapa.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
-  const mentions = ordenado.map(([jid]) => jid);
-  const texto = '🏆 *Ranking de más activas:*\n' + ordenado.map(([jid, n], i) => `${i + 1}. ${obtenerNombreVisible(jid)} — ${n} msjs`).join('\n');
-  return { texto, mentions };
+  return { texto: '🏆 *Ranking de más activas:*\n' + ordenado.map(([jid, n], i) => `${i + 1}. ${obtenerNombreVisible(jid)} — ${n} msjs`).join('\n'), mentions: ordenado.map(([jid]) => jid) };
 }
 
 async function esAdminGrupo(sock, jidGrupo, jidUsuario) {
   try {
     const metadata = await sock.groupMetadata(jidGrupo);
+    actualizarCacheLid(metadata);
     const numeroObjetivo = extraerNumero(jidUsuario);
-    const participante = metadata.participants.find(p => {
-      if (p.id === jidUsuario) return true;
-      const candidatos = [p.id, p.phoneNumber, p.jid, p.lid].filter(Boolean).map(extraerNumero);
-      return candidatos.includes(numeroObjetivo);
-    });
+    const participante = metadata.participants.find(p => { if (p.id === jidUsuario) return true; const candidatos = [p.id, p.phoneNumber, p.jid, p.lid].filter(Boolean).map(extraerNumero); return candidatos.includes(numeroObjetivo); });
     return !!participante && (participante.admin === 'admin' || participante.admin === 'superadmin');
   } catch (err) { return false; }
 }
@@ -888,34 +847,17 @@ async function comandoPerfil(sock, jidGrupo, jidUsuario, mencionJid) {
   await sock.sendMessage(jidGrupo, { text: `👤 *Perfil de ${obtenerNombreVisible(jidObjetivo)}*\n📨 Mensajes: ${mensajes}\n👑 Admin: ${esAdmin ? 'Sí' : 'No'}`, mentions: [jidObjetivo] });
 }
 
-function generarCodigoUnico() {
-  const lista = integrantesClan[CLAVE_CLAN_GLOBAL] || [];
-  const usados = new Set(lista.map(i => i.codigo).filter(Boolean));
-  let codigo;
-  do { codigo = String(Math.floor(Math.random() * 100)).padStart(2, '0'); } while (usados.has(codigo));
-  return codigo;
-}
-
-function asegurarCodigosClan() {
-  const lista = integrantesClan[CLAVE_CLAN_GLOBAL] || [];
-  let cambiado = false;
-  for (const ficha of lista) { if (!ficha.codigo) { ficha.codigo = generarCodigoUnico(); cambiado = true; } }
-  if (cambiado) guardarIntegrantes();
-}
+function generarCodigoUnico() { const lista = integrantesClan[CLAVE_CLAN_GLOBAL] || []; const usados = new Set(lista.map(i => i.codigo).filter(Boolean)); let codigo; do { codigo = String(Math.floor(Math.random() * 100)).padStart(2, '0'); } while (usados.has(codigo)); return codigo; }
+function asegurarCodigosClan() { const lista = integrantesClan[CLAVE_CLAN_GLOBAL] || []; let cambiado = false; for (const ficha of lista) { if (!ficha.codigo) { ficha.codigo = generarCodigoUnico(); cambiado = true; } } if (cambiado) guardarIntegrantes(); }
 
 function agregarIntegrante(datos) {
   if (!integrantesClan[CLAVE_CLAN_GLOBAL]) integrantesClan[CLAVE_CLAN_GLOBAL] = [];
   const lista = integrantesClan[CLAVE_CLAN_GLOBAL];
   const numeroLimpio = extraerNumero(datos.numero) || datos.numero;
   const existente = lista.find(i => (datos.idFF && i.idFF === datos.idFF) || extraerNumero(i.numero) === numeroLimpio);
-  if (existente) {
-    Object.assign(existente, datos, { fecha: existente.fecha, codigo: existente.codigo || generarCodigoUnico() });
-    guardarIntegrantes();
-    return { actualizado: true, ficha: existente };
-  }
+  if (existente) { Object.assign(existente, datos, { fecha: existente.fecha, codigo: existente.codigo || generarCodigoUnico() }); guardarIntegrantes(); return { actualizado: true, ficha: existente }; }
   const ficha = { ...datos, codigo: generarCodigoUnico(), tieneFoto: false, fecha: new Date().toISOString() };
-  lista.push(ficha);
-  guardarIntegrantes();
+  lista.push(ficha); guardarIntegrantes();
   return { actualizado: false, ficha };
 }
 
@@ -926,58 +868,23 @@ function quitarIntegrante(criterio) {
   const indice = lista.findIndex(i => i.idFF === criterio || extraerNumero(i.numero) === criterioLimpio || i.codigo === criterioCodigo);
   if (indice === -1) return null;
   const eliminada = lista[indice];
-  lista.splice(indice, 1);
-  guardarIntegrantes();
+  lista.splice(indice, 1); guardarIntegrantes();
   if (eliminada.tieneFoto) githubEliminarFoto(rutaFotoIntegrante(eliminada.codigo)).catch(() => {});
   return eliminada;
 }
 
-function buscarIntegrantePorDato(criterio) {
-  asegurarCodigosClan();
-  const lista = integrantesClan[CLAVE_CLAN_GLOBAL] || [];
-  const criterioLimpio = extraerNumero(criterio) || criterio;
-  const criterioCodigo = String(criterio).trim().padStart(2, '0');
-  return lista.find(i => i.idFF === criterio || extraerNumero(i.numero) === criterioLimpio || i.codigo === criterioCodigo) || null;
-}
+function buscarIntegrantePorDato(criterio) { asegurarCodigosClan(); const lista = integrantesClan[CLAVE_CLAN_GLOBAL] || []; const criterioLimpio = extraerNumero(criterio) || criterio; const criterioCodigo = String(criterio).trim().padStart(2, '0'); return lista.find(i => i.idFF === criterio || extraerNumero(i.numero) === criterioLimpio || i.codigo === criterioCodigo) || null; }
+function buscarIntegrantePorNumero(numero) { asegurarCodigosClan(); const lista = integrantesClan[CLAVE_CLAN_GLOBAL] || []; const numeroLimpio = extraerNumero(numero); return lista.find(i => extraerNumero(i.numero) === numeroLimpio) || null; }
+function buscarIntegrantesPorNombre(nombreBuscado) { asegurarCodigosClan(); const lista = integrantesClan[CLAVE_CLAN_GLOBAL] || []; const objetivo = normalizarBusqueda(nombreBuscado); if (!objetivo) return []; return lista.filter(i => (i.nombre && normalizarBusqueda(i.nombre).includes(objetivo)) || (i.apodo && normalizarBusqueda(i.apodo).includes(objetivo))); }
+function obtenerEtiquetaPersona(criterio) { if (!criterio) return 'Desconocido'; const numero = extraerNumero(criterio) || criterio; const ficha = buscarIntegrantePorDato(numero); if (ficha) return ficha.apodo || ficha.nombre; const nombreCache = NOMBRES_CONOCIDOS.get(numero); return nombreCache || 'Miembro del grupo'; }
 
-function buscarIntegrantePorNumero(numero) {
-  asegurarCodigosClan();
-  const lista = integrantesClan[CLAVE_CLAN_GLOBAL] || [];
-  const numeroLimpio = extraerNumero(numero);
-  return lista.find(i => extraerNumero(i.numero) === numeroLimpio) || null;
-}
-
-function buscarIntegrantesPorNombre(nombreBuscado) {
-  asegurarCodigosClan();
-  const lista = integrantesClan[CLAVE_CLAN_GLOBAL] || [];
-  const objetivo = normalizarBusqueda(nombreBuscado);
-  if (!objetivo) return [];
-  return lista.filter(i => (i.nombre && normalizarBusqueda(i.nombre).includes(objetivo)) || (i.apodo && normalizarBusqueda(i.apodo).includes(objetivo)));
-}
-
-function obtenerEtiquetaPersona(criterio) {
-  if (!criterio) return 'Desconocido';
-  const numero = extraerNumero(criterio) || criterio;
-  const ficha = buscarIntegrantePorDato(numero);
-  if (ficha) return ficha.apodo || ficha.nombre;
-  const nombreCache = NOMBRES_CONOCIDOS.get(numero);
-  return nombreCache || 'Miembro del grupo';
-}
-
-function formatearFichaIntegrante(ficha) {
-  return `*FICHA DE INTEGRANTE*\n*Nombre*  : ${ficha.nombre}\n*Número*  : ${ficha.numero}\n*ID FF*   : ${ficha.idFF}\n*Apodo*   : ${ficha.apodo}\n*Código*  : ${ficha.codigo}`;
-}
-function formatearFichaCorta(ficha, posicion) {
-  return `${posicion}. *${ficha.nombre}* (${ficha.apodo}) — código ${ficha.codigo}\n   📱 ${ficha.numero} · 🆔 ${ficha.idFF}`;
-}
+function formatearFichaIntegrante(ficha) { return `*FICHA DE INTEGRANTE*\n*Nombre*  : ${ficha.nombre}\n*Número*  : ${ficha.numero}\n*ID FF*   : ${ficha.idFF}\n*Apodo*   : ${ficha.apodo}\n*Código*  : ${ficha.codigo}`; }
+function formatearFichaCorta(ficha, posicion) { return `${posicion}. *${ficha.nombre}* (${ficha.apodo}) — código ${ficha.codigo}\n   📱 ${ficha.numero} · 🆔 ${ficha.idFF}`; }
 
 async function enviarFichaCompleta(sock, jidChat, ficha) {
   const texto = formatearFichaIntegrante(ficha);
   if (ficha.tieneFoto && GITHUB_TOKEN && GITHUB_REPO) {
-    try {
-      const buffer = await githubDescargarFoto(rutaFotoIntegrante(ficha.codigo));
-      if (buffer) { await sock.sendMessage(jidChat, { image: buffer, caption: texto }); return; }
-    } catch (err) { console.log('⚠️ No se pudo descargar la foto:', err.message); }
+    try { const buffer = await githubDescargarFoto(rutaFotoIntegrante(ficha.codigo)); if (buffer) { await sock.sendMessage(jidChat, { image: buffer, caption: texto }); return; } } catch (err) {}
   }
   await sock.sendMessage(jidChat, { text: texto });
 }
@@ -987,26 +894,24 @@ function totalPaginasClan() { return Math.max(1, Math.ceil((integrantesClan[CLAV
 function generarTextoPaginaClan(numeroPaginaTexto) {
   asegurarCodigosClan();
   const lista = integrantesClan[CLAVE_CLAN_GLOBAL] || [];
-  if (!lista.length) return 'Aún no hay integrantes registradas en el clan.';
+  if (!lista.length) return 'Aún no hay integrantes registradas.';
   const paginas = totalPaginasClan();
   const numeroPagina = parseInt(numeroPaginaTexto, 10);
-  if (!numeroPaginaTexto || isNaN(numeroPagina) || numeroPagina < 1) return `Uso: /lista <número>\nHay ${paginas} página(s) (1 a ${paginas}).`;
-  if (numeroPagina > paginas) return `Esa página no existe. Solo hay ${paginas} página(s). Prueba /lista ${String(paginas).padStart(2, '0')}.`;
+  if (!numeroPaginaTexto || isNaN(numeroPagina) || numeroPagina < 1) return `Uso: /lista <número>\nHay ${paginas} página(s).`;
+  if (numeroPagina > paginas) return `Esa página no existe. Solo hay ${paginas} página(s).`;
   const inicio = (numeroPagina - 1) * INTEGRANTES_POR_PAGINA;
   const bloque = lista.slice(inicio, inicio + INTEGRANTES_POR_PAGINA);
-  const cuerpo = bloque.map((ficha, i) => formatearFichaCorta(ficha, inicio + i + 1)).join('\n\n');
-  return `*CLAN · PÁGINA ${String(numeroPagina).padStart(2, '0')} DE ${String(paginas).padStart(2, '0')}*\n\n${cuerpo}`;
+  return `*CLAN · PÁGINA ${String(numeroPagina).padStart(2, '0')} DE ${String(paginas).padStart(2, '0')}*\n\n${bloque.map((ficha, i) => formatearFichaCorta(ficha, inicio + i + 1)).join('\n\n')}`;
 }
 
 function generarResumenClan() {
   asegurarCodigosClan();
   const lista = integrantesClan[CLAVE_CLAN_GLOBAL] || [];
-  if (!lista.length) return 'Aún no hay integrantes registradas en el clan.';
+  if (!lista.length) return 'Aún no hay integrantes registradas.';
   const paginas = totalPaginasClan();
   const primeraPagina = generarTextoPaginaClan('1');
   if (paginas <= 1) return primeraPagina;
-  const extra = Array.from({ length: paginas - 1 }, (_, i) => `/lista ${String(i + 2).padStart(2, '0')}`).join('\n');
-  return `${primeraPagina}\n\nHay ${paginas} páginas (${lista.length} integrantes):\n${extra}`;
+  return `${primeraPagina}\n\nHay ${paginas} páginas (${lista.length} integrantes):\n${Array.from({ length: paginas - 1 }, (_, i) => `/lista ${String(i + 2).padStart(2, '0')}`).join('\n')}`;
 }
 
 async function comandoClanAgregar(sock, jidChat, jidUsuario, textoCompleto) {
@@ -1017,14 +922,12 @@ async function comandoClanAgregar(sock, jidChat, jidUsuario, textoCompleto) {
   const { actualizado, ficha } = agregarIntegrante({ nombre, numero, idFF, apodo, agregadoPor: extraerNumero(jidUsuario) });
   await sock.sendMessage(jidChat, { text: `${actualizado ? '✏️ Ficha actualizada' : '✅ Integrante registrada'}:\n\n${formatearFichaIntegrante(ficha)}` });
 }
-
 async function comandoClanQuitar(sock, jidChat, jidUsuario, criterio) {
   if (!(await tienePermisoClan(sock, jidChat, jidUsuario))) { await sock.sendMessage(jidChat, { text: 'Solo las admins o el propietario pueden quitar integrantes 🚫' }); return; }
   if (!criterio) { await sock.sendMessage(jidChat, { text: 'Uso: /clan quitar <número, ID FF o código>' }); return; }
   const eliminada = quitarIntegrante(criterio);
   await sock.sendMessage(jidChat, { text: eliminada ? `🗑️ Eliminada: *${eliminada.apodo || eliminada.nombre}*.` : 'No encontré a nadie con ese dato.' });
 }
-
 async function comandoClanVer(sock, jidChat, criterio) {
   if (!criterio) { await sock.sendMessage(jidChat, { text: 'Uso: /clan ver <número, ID FF o código>' }); return; }
   const ficha = buscarIntegrantePorDato(criterio);
@@ -1032,24 +935,24 @@ async function comandoClanVer(sock, jidChat, criterio) {
   await enviarFichaCompleta(sock, jidChat, ficha);
 }
 
-// ── /eliminar <código> — al eliminar, si había una salida pendiente de
-// aviso, notifica al grupo original con un mensaje VARIADO generado por IA. ──
+// ── /eliminar <código> — MÁS SIMPLE: si el código corresponde a un aviso de
+// salida pendiente, SOLO el propietario puede confirmar la eliminación. ────
 async function comandoEliminarPorCodigo(sock, jidChat, jidUsuario, codigo) {
-  if (!(await tienePermisoClan(sock, jidChat, jidUsuario))) { await sock.sendMessage(jidChat, { text: 'Solo las admins o el propietario pueden eliminar integrantes 🚫' }); return; }
   if (!codigo || !/^\d{1,2}$/.test(codigo)) { await sock.sendMessage(jidChat, { text: 'Uso: /eliminar <código de dos cifras>' }); return; }
   const codigoNormalizado = codigo.padStart(2, '0');
+  const esSalidaPendiente = pendingSalidasClan.has(codigoNormalizado);
+  const tienePermiso = esSalidaPendiente ? await esPropietarioContexto(sock, jidChat, jidUsuario) : await tienePermisoClan(sock, jidChat, jidUsuario);
+  if (!tienePermiso) { await sock.sendMessage(jidChat, { text: esSalidaPendiente ? 'Solo el propietario puede confirmar esta eliminación 🚫' : 'Solo las admins o el propietario pueden eliminar integrantes 🚫' }); return; }
   const eliminada = quitarIntegrante(codigoNormalizado);
-  if (!eliminada) { await sock.sendMessage(jidChat, { text: `No encontré a nadie con el código ${codigoNormalizado}. Usa /integrantes para revisar.` }); return; }
+  if (!eliminada) { await sock.sendMessage(jidChat, { text: `No encontré a nadie con el código ${codigoNormalizado}.` }); return; }
   await sock.sendMessage(jidChat, { text: `🗑️ Eliminada del clan: *${eliminada.apodo || eliminada.nombre}* (código ${eliminada.codigo}).` });
 
   const pendiente = pendingSalidasClan.get(codigoNormalizado);
   if (pendiente) {
     pendingSalidasClan.delete(codigoNormalizado);
-    const mensajeGrupo = await generarMensajeVariadoIA(
-      `Escribe un mensaje corto y natural avisando al grupo que la ficha de una integrante que se salió del grupo (apodo "${eliminada.apodo}") fue eliminada de la lista del clan.`,
-      FRASES_CONFIRMACION_ELIMINACION_FALLBACK
-    );
-    try { await sock.sendMessage(pendiente.jidGrupoOrigen, { text: mensajeGrupo }); } catch (err) {}
+    const mensajeGrupo = await generarMensajeVariadoIA(`Avisa al grupo, en un mensaje corto, que la ficha de "${eliminada.apodo}" fue eliminada de la lista del clan.`, FRASES_CONFIRMACION_ELIMINACION_FALLBACK);
+    if (pendiente.jidGrupoOrigen !== jidChat) { try { await sock.sendMessage(pendiente.jidGrupoOrigen, { text: mensajeGrupo }); } catch (err) {} }
+    else { await sock.sendMessage(jidChat, { text: mensajeGrupo }); }
   }
 }
 
@@ -1062,8 +965,7 @@ async function comandoEliminarFoto(sock, jidChat, jidUsuario, codigo) {
   if (!ficha) { await sock.sendMessage(jidChat, { text: `No encontré a nadie con el código ${codigoNormalizado}.` }); return; }
   if (!ficha.tieneFoto) { await sock.sendMessage(jidChat, { text: `*${ficha.apodo || ficha.nombre}* no tiene foto guardada.` }); return; }
   await githubEliminarFoto(rutaFotoIntegrante(ficha.codigo));
-  ficha.tieneFoto = false;
-  guardarIntegrantes();
+  ficha.tieneFoto = false; guardarIntegrantes();
   await sock.sendMessage(jidChat, { text: `🗑️ Foto eliminada de *${ficha.apodo || ficha.nombre}*.` });
 }
 
@@ -1071,8 +973,8 @@ async function comandoIntegrantePorMencion(sock, jidChat, jidUsuario, mencionado
   if (!(await tienePermisoClan(sock, jidChat, jidUsuario))) { await sock.sendMessage(jidChat, { text: 'Solo las admins o el propietario pueden ver fichas 🚫' }); return; }
   if (!mencionados.length) { await sock.sendMessage(jidChat, { text: 'Menciona a quién buscar: /integrante @usuario' }); return; }
   const numero = await resolverNumeroReal(sock, jidChat, mencionados[0]);
-  const ficha = buscarIntegrantePorNumero(numero);
-  if (!ficha) { await sock.sendMessage(jidChat, { text: `No encontré a +${numero} en el clan.` }); return; }
+  const ficha = numero ? buscarIntegrantePorNumero(numero) : null;
+  if (!ficha) { await sock.sendMessage(jidChat, { text: `No encontré a esa persona en el clan.` }); return; }
   await enviarFichaCompleta(sock, jidChat, ficha);
 }
 
@@ -1087,21 +989,14 @@ async function comandoFotoIntegrante(sock, jidChat, jidUsuario, msg, codigoTexto
   try {
     const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger: pino({ level: 'error' }) });
     await githubSubirFoto(rutaFotoIntegrante(ficha.codigo), buffer);
-    ficha.tieneFoto = true;
-    guardarIntegrantes();
+    ficha.tieneFoto = true; guardarIntegrantes();
     await sock.sendMessage(jidChat, { text: `📸 Foto guardada para *${ficha.apodo || ficha.nombre}*.` });
   } catch (err) { await sock.sendMessage(jidChat, { text: 'No pude guardar la foto, intenta de nuevo.' }); }
 }
 
 const borradoresIntegrante = new Map();
 function claveBorrador(jidGrupo, jidUsuario) { return `${jidGrupo}:${jidUsuario}`; }
-function actualizarBorrador(jidGrupo, jidUsuario, campo, valor) {
-  const clave = claveBorrador(jidGrupo, jidUsuario);
-  const actual = borradoresIntegrante.get(clave) || {};
-  actual[campo] = valor;
-  borradoresIntegrante.set(clave, actual);
-  return actual;
-}
+function actualizarBorrador(jidGrupo, jidUsuario, campo, valor) { const clave = claveBorrador(jidGrupo, jidUsuario); const actual = borradoresIntegrante.get(clave) || {}; actual[campo] = valor; borradoresIntegrante.set(clave, actual); return actual; }
 function borradorCompleto(borrador) { return !!(borrador && borrador.nombre && borrador.numero && borrador.idFF && borrador.apodo); }
 const ETIQUETAS_CAMPO_BORRADOR = { nombre: '/nombreff', numero: '/numeroff', idFF: '/idff', apodo: '/apodoff' };
 
@@ -1119,37 +1014,24 @@ async function comandoCampoIntegrante(sock, jidChat, jidUsuario, campo, valor) {
   }
 }
 
-// ── SISTEMA DE AVISO DE SALIDA ──────────────────────────────────────────────
-const pendingSalidasClan = new Map(); // codigo -> { jidGrupoOrigen, nombreGrupo, fecha }
+// ── SISTEMA DE AVISO DE SALIDA — todo en el mismo grupo, simple ────────────
+const pendingSalidasClan = new Map(); // codigo -> { jidGrupoOrigen, fecha }
 
 async function avisarSalidaIntegranteRegistrado(sock, jidGrupo, numeroSalio) {
   const ficha = buscarIntegrantePorNumero(numeroSalio);
   if (!ficha) return;
-
-  let nombreGrupo = 'un grupo';
-  try { const meta = await sock.groupMetadata(jidGrupo); nombreGrupo = meta.subject || nombreGrupo; } catch (err) {}
-
-  pendingSalidasClan.set(ficha.codigo, { jidGrupoOrigen: jidGrupo, nombreGrupo, fecha: Date.now() });
-
-  const mensajeAviso = await generarMensajeVariadoIA(
-    `Escribe un aviso corto y natural avisando que una integrante registrada en el clan (apodada "${ficha.apodo}") acaba de salir/ser sacada del grupo "${nombreGrupo}".`,
-    FRASES_AVISO_SALIDA_FALLBACK
-  );
-
-  await sock.sendMessage(JID_DUEÑO, { text: mensajeAviso });
-  await enviarFichaCompleta(sock, JID_DUEÑO, ficha);
-  await sock.sendMessage(JID_DUEÑO, { text: `¿Te gustaría eliminarla de la lista del clan? Usa: /eliminar ${ficha.codigo}` });
+  pendingSalidasClan.set(ficha.codigo, { jidGrupoOrigen: jidGrupo, fecha: Date.now() });
+  const mensajeAviso = await generarMensajeVariadoIA(`Avisa al grupo, en un mensaje corto y natural, que una integrante registrada en el clan (apodada "${ficha.apodo}") salió o fue sacada del grupo, y que tiene registro en la lista.`, FRASES_AVISO_SALIDA_FALLBACK);
+  await sock.sendMessage(jidGrupo, { text: mensajeAviso });
+  await enviarFichaCompleta(sock, jidGrupo, ficha);
+  await sock.sendMessage(jidGrupo, { text: `¿Deseas eliminarla de la lista del clan? Solo el propietario puede confirmarlo con: /eliminar ${ficha.codigo}` });
 }
 
 async function manejarComandosClanUniversal(sock, jidChat, jidUsuario, texto, mencionados, msg) {
-  const matchNombre = texto.match(/^\/nombreff\s+(.+)/i);
-  if (matchNombre) { await comandoCampoIntegrante(sock, jidChat, jidUsuario, 'nombre', matchNombre[1].trim()); return true; }
-  const matchNumero = texto.match(/^\/numeroff\s+(.+)/i);
-  if (matchNumero) { await comandoCampoIntegrante(sock, jidChat, jidUsuario, 'numero', matchNumero[1].trim()); return true; }
-  const matchIdFF = texto.match(/^\/idff\s+(.+)/i);
-  if (matchIdFF) { await comandoCampoIntegrante(sock, jidChat, jidUsuario, 'idFF', matchIdFF[1].trim()); return true; }
-  const matchApodo = texto.match(/^\/apodoff\s+(.+)/i);
-  if (matchApodo) { await comandoCampoIntegrante(sock, jidChat, jidUsuario, 'apodo', matchApodo[1].trim()); return true; }
+  const matchNombre = texto.match(/^\/nombreff\s+(.+)/i); if (matchNombre) { await comandoCampoIntegrante(sock, jidChat, jidUsuario, 'nombre', matchNombre[1].trim()); return true; }
+  const matchNumero = texto.match(/^\/numeroff\s+(.+)/i); if (matchNumero) { await comandoCampoIntegrante(sock, jidChat, jidUsuario, 'numero', matchNumero[1].trim()); return true; }
+  const matchIdFF = texto.match(/^\/idff\s+(.+)/i); if (matchIdFF) { await comandoCampoIntegrante(sock, jidChat, jidUsuario, 'idFF', matchIdFF[1].trim()); return true; }
+  const matchApodo = texto.match(/^\/apodoff\s+(.+)/i); if (matchApodo) { await comandoCampoIntegrante(sock, jidChat, jidUsuario, 'apodo', matchApodo[1].trim()); return true; }
   if (PATRON_COMANDO_ELIMINAR_FOTO.test(texto)) { const m = texto.match(PATRON_COMANDO_ELIMINAR_FOTO); await comandoEliminarFoto(sock, jidChat, jidUsuario, m[1]); return true; }
   if (PATRON_COMANDO_FOTOFF.test(texto)) { const m = texto.match(PATRON_COMANDO_FOTOFF); await comandoFotoIntegrante(sock, jidChat, jidUsuario, msg, m[1]); return true; }
 
@@ -1157,16 +1039,8 @@ async function manejarComandosClanUniversal(sock, jidChat, jidUsuario, texto, me
   const comando = (partesTexto[0] || '').toLowerCase();
   const resto = partesTexto.slice(1);
 
-  if (comando === '/integrantes') {
-    if (!(await tienePermisoClan(sock, jidChat, jidUsuario))) { await sock.sendMessage(jidChat, { text: 'Solo las admins o el propietario pueden ver la lista 🚫' }); return true; }
-    await sock.sendMessage(jidChat, { text: generarResumenClan() });
-    return true;
-  }
-  if (comando === '/lista') {
-    if (!(await tienePermisoClan(sock, jidChat, jidUsuario))) { await sock.sendMessage(jidChat, { text: 'Solo las admins o el propietario pueden ver la lista 🚫' }); return true; }
-    await sock.sendMessage(jidChat, { text: generarTextoPaginaClan(resto[0]) });
-    return true;
-  }
+  if (comando === '/integrantes') { if (!(await tienePermisoClan(sock, jidChat, jidUsuario))) { await sock.sendMessage(jidChat, { text: 'Solo las admins o el propietario 🚫' }); return true; } await sock.sendMessage(jidChat, { text: generarResumenClan() }); return true; }
+  if (comando === '/lista') { if (!(await tienePermisoClan(sock, jidChat, jidUsuario))) { await sock.sendMessage(jidChat, { text: 'Solo las admins o el propietario 🚫' }); return true; } await sock.sendMessage(jidChat, { text: generarTextoPaginaClan(resto[0]) }); return true; }
   if (comando === '/integrante') { await comandoIntegrantePorMencion(sock, jidChat, jidUsuario, mencionados || []); return true; }
   if (comando === '/eliminar') { await comandoEliminarPorCodigo(sock, jidChat, jidUsuario, resto[0]); return true; }
   if (comando === '/clan') {
@@ -1176,7 +1050,7 @@ async function manejarComandosClanUniversal(sock, jidChat, jidUsuario, texto, me
     if (sub === 'quitar') { await comandoClanQuitar(sock, jidChat, jidUsuario, restoSub.trim()); return true; }
     if (sub === 'ver') { await comandoClanVer(sock, jidChat, restoSub.trim()); return true; }
     if (sub === 'lista') { await sock.sendMessage(jidChat, { text: generarResumenClan() }); return true; }
-    await sock.sendMessage(jidChat, { text: 'Usa /integrantes para ver el resumen del clan 🙂' });
+    await sock.sendMessage(jidChat, { text: 'Usa /integrantes 🙂' });
     return true;
   }
   return false;
@@ -1185,9 +1059,8 @@ async function manejarComandosClanUniversal(sock, jidChat, jidUsuario, texto, me
 function formatearMovimiento(jidGrupo, r) {
   const info = ETIQUETAS_MOVIMIENTO[r.accion] || { icono: '•', texto: r.accion };
   const fecha = new Date(r.fecha).toLocaleString('es-PE', { timeZone: 'America/Lima', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-  const numeroEjecutor = r.ejecutor;
-  const nombreEjecutor = numeroEjecutor ? obtenerEtiquetaPersona(numeroEjecutor) : 'Desconocido';
-  let cuerpo = `*MOVIMIENTO DE GRUPO* ${info.icono}\n\n*Grupo:* ${r.nombreGrupo || 'Sin nombre'}\n*Realizado por:* ${nombreEjecutor}${numeroEjecutor ? ` (+${numeroEjecutor})` : ''}\n*Acción:* ${info.texto}`;
+  const nombreEjecutor = r.ejecutor ? obtenerEtiquetaPersona(r.ejecutor) : 'Desconocido';
+  let cuerpo = `*MOVIMIENTO DE GRUPO* ${info.icono}\n\n*Grupo:* ${r.nombreGrupo || 'Sin nombre'}\n*Realizado por:* ${nombreEjecutor}${r.ejecutor ? ` (+${r.ejecutor})` : ' (número no disponible)'}\n*Acción:* ${info.texto}`;
   if (r.objetivos && r.objetivos.length) cuerpo += `\n*Afectado(s):* ${r.objetivos.map(n => `${obtenerEtiquetaPersona(n)} (+${n})`).join(', ')}`;
   cuerpo += `\n*Fecha:* ${fecha}`;
   return cuerpo;
@@ -1198,7 +1071,7 @@ async function comandoMovimientos(sock, jidGrupo, jidUsuario, argumentoTexto) {
   const numeroEncontrado = (argumentoTexto.match(/\d+/) || [])[0];
   const cantidad = Math.min(Math.max(parseInt(numeroEncontrado, 10) || 10, 1), 30);
   const registros = registroMovimientos.filter(r => r.jidGrupo === jidGrupo).slice(-cantidad).reverse();
-  if (!registros.length) { await sock.sendMessage(jidGrupo, { text: '📋 Todavía no hay movimientos registrados en este grupo.' }); return; }
+  if (!registros.length) { await sock.sendMessage(jidGrupo, { text: '📋 Todavía no hay movimientos registrados.' }); return; }
   await sock.sendMessage(jidGrupo, { text: `*ÚLTIMOS MOVIMIENTOS*\n\n${registros.map(r => formatearMovimiento(jidGrupo, r)).join('\n\n')}` });
 }
 async function comandoPromoverDegradar(sock, jidGrupo, jidUsuario, mencionados, accion) {
@@ -1207,7 +1080,7 @@ async function comandoPromoverDegradar(sock, jidGrupo, jidUsuario, mencionados, 
     marcarAccionBotReciente(jidGrupo, accion, mencionados);
     await sock.groupParticipantsUpdate(jidGrupo, mencionados, accion);
     let nombreGrupo = null;
-    try { const meta = await sock.groupMetadata(jidGrupo); nombreGrupo = meta.subject; } catch (err) {}
+    try { const meta = await sock.groupMetadata(jidGrupo); actualizarCacheLid(meta); nombreGrupo = meta.subject; } catch (err) {}
     await registrarAccionAdmin(sock, jidGrupo, accion, jidUsuario, mencionados, nombreGrupo);
     return { ok: true };
   } catch (err) { return { ok: false }; }
@@ -1224,6 +1097,7 @@ async function comandoTodos(sock, jidGrupo, jidUsuario, mensajeExtra) {
   if (!(await esAdminGrupo(sock, jidGrupo, jidUsuario))) { await sock.sendMessage(jidGrupo, { text: 'Solo las admins pueden usar /todos 🚫' }); return; }
   try {
     const metadata = await sock.groupMetadata(jidGrupo);
+    actualizarCacheLid(metadata);
     const jids = metadata.participants.map(p => p.id);
     const texto = mensajeExtra ? `📢 ${mensajeExtra}` : '📢 ¡Atención a todas!';
     await sock.sendMessage(jidGrupo, { text: `${texto}\n\n${jids.map(j => `@${j.split('@')[0]}`).join(' ')}`, mentions: jids });
@@ -1234,7 +1108,7 @@ async function comandoCerrarGrupo(sock, jidGrupo, jidUsuario, cerrar) {
   try {
     await sock.groupSettingUpdate(jidGrupo, cerrar ? 'announcement' : 'not_announcement');
     let nombreGrupo = null;
-    try { const meta = await sock.groupMetadata(jidGrupo); nombreGrupo = meta.subject; } catch (err) {}
+    try { const meta = await sock.groupMetadata(jidGrupo); actualizarCacheLid(meta); nombreGrupo = meta.subject; } catch (err) {}
     await registrarAccionAdmin(sock, jidGrupo, cerrar ? 'cerrar' : 'abrir', jidUsuario, [], nombreGrupo);
     await sock.sendMessage(jidGrupo, { text: cerrar ? '🔒 Grupo cerrado, solo admins escriben.' : '🔓 Grupo abierto para todas.' });
   } catch (err) { await sock.sendMessage(jidGrupo, { text: 'No pude cambiar la configuración, revisa que el bot sea admin.' }); }
@@ -1247,19 +1121,15 @@ async function comandoCerrarGrupoComando(sock, jidGrupo, jidUsuario, cerrar) {
 
 function generarTextoInfo() {
   const uptimeH = ((Date.now() - estado.inicio) / 3600000).toFixed(1);
-  return `🤖 *${NOMBRE_BOT}* — v${VERSION_BOT}\n\n👨‍💻 Creada por: *${CREADOR}*.\n🟢 Estado: ${estado.conectado ? 'Conectada y activa' : 'Desconectada'}\n⏱ Tiempo activa: ${uptimeH}h\n\nEscribe /comando anzy para ver comandos.`;
+  return `🤖 *${NOMBRE_BOT}* — v${VERSION_BOT}\n\n👨‍💻 Creada por: *${CREADOR}*.\n🟢 Estado: ${estado.conectado ? 'Conectada' : 'Desconectada'}\n⏱ Uptime: ${uptimeH}h\n\nEscribe /comando anzy para ver comandos.`;
 }
 
-const TEXTO_CREADOR = `💖 Fui creada con mucho cariño por *${CREADOR}*. ¡Gracias por todo, Albert! 🙌✨`;
+const TEXTO_CREADOR = `💖 Fui creada con mucho cariño por *${CREADOR}*. ¡Gracias por todo! 🙌✨`;
 
 async function procesarComandoJefe(sock, remitente, texto) {
   const t = texto.toLowerCase().trim();
   if (t === 'salir' || t.includes('modo normal')) { modoJefe.delete(remitente); await sock.sendMessage(remitente, { text: 'Listo jefe, cerré el menú 🙌' }); return; }
-  if (t.includes('informe') || t.includes('estado')) {
-    const uptimeH = ((Date.now() - estado.inicio) / 3600000).toFixed(1);
-    await sock.sendMessage(remitente, { text: `📊 *Informe*\nConectada: ${estado.conectado ? 'Sí' : 'No'}\nBot activo: ${botActivo ? 'Sí' : 'No'}\nUptime: ${uptimeH}h\nMensajes recibidos: ${estado.mensajesRecibidos}\nMensajes enviados: ${estado.mensajesEnviados}\nCuota IA: ${contadorCuota.usados}/${LIMITE_DIARIO_ESTIMADO}` });
-    return;
-  }
+  if (t.includes('informe') || t.includes('estado')) { const uptimeH = ((Date.now() - estado.inicio) / 3600000).toFixed(1); await sock.sendMessage(remitente, { text: `📊 Conectada: ${estado.conectado ? 'Sí' : 'No'}\nBot activo: ${botActivo ? 'Sí' : 'No'}\nUptime: ${uptimeH}h\nRecibidos: ${estado.mensajesRecibidos}\nEnviados: ${estado.mensajesEnviados}\nCuota IA: ${contadorCuota.usados}/${LIMITE_DIARIO_ESTIMADO}` }); return; }
   if (t.includes('apaga')) { botActivo = false; await sock.sendMessage(remitente, { text: '🔴 Bot apagado.' }); return; }
   if (t.includes('enciende') || t.includes('activa')) { botActivo = true; await sock.sendMessage(remitente, { text: '🟢 Bot encendido.' }); return; }
   if (t.includes('restaura')) { estiloGlobalExtra = ''; await sock.sendMessage(remitente, { text: '✅ Volví a mi forma original.' }); return; }
@@ -1267,18 +1137,26 @@ async function procesarComandoJefe(sock, remitente, texto) {
   await sock.sendMessage(remitente, { text: `✅ Actualicé mi forma de expresarme:\n"${estiloGlobalExtra}"` });
 }
 
-// ── /actualizacion — avisa a todos los grupos que hay mantenimiento ─────────
-async function comandoActualizacion(sock, jidChat, jidUsuario) {
-  if (!(await esPropietarioContexto(sock, jidChat, jidUsuario))) { await sock.sendMessage(jidChat, { text: 'Solo el propietario puede anunciar actualizaciones 🚫' }); return; }
-  await sock.sendMessage(jidChat, { text: '📡 Avisando a todos los grupos...' });
+// ── /actualizacion — la IA redacta el anuncio con las mejoras que le pases ──
+async function generarAnuncioActualizacionIA(mejorasTexto) {
+  const prompt = `Escribe un anuncio corto, emocionante y cálido (tono femenino) avisando que el bot ${NOMBRE_BOT} entrará en mantenimiento para traer estas mejoras: ${mejorasTexto || 'mejoras generales de rendimiento y nuevas funciones'}. No agregues firma ni versión al final, eso se agrega aparte. Máximo 5 líneas.`;
   try {
+    const respuesta = await generarRespuestaIA(prompt, 'Genera SOLO el anuncio, sin comillas.', 'sistema_interno', 'sistema_interno');
+    return (respuesta || '').trim() || `🛠️ ${NOMBRE_BOT} entrará en actualización con nuevas mejoras.`;
+  } catch (err) { return `🛠️ ${NOMBRE_BOT} entrará en actualización con nuevas mejoras.`; }
+}
+
+async function comandoActualizacion(sock, jidChat, jidUsuario, mejorasTexto) {
+  if (!(await esPropietarioContexto(sock, jidChat, jidUsuario))) { await sock.sendMessage(jidChat, { text: 'Solo el propietario puede anunciar actualizaciones 🚫' }); return; }
+  await sock.sendMessage(jidChat, { text: '📡 Preparando el anuncio y avisando a todos los grupos...' });
+  try {
+    const anuncio = await generarAnuncioActualizacionIA(mejorasTexto);
+    const mensajeFinal = `${anuncio}\n\n_Versión actual: v${VERSION_BOT}_\n\n> ${CREADOR}`;
     const grupos = await sock.groupFetchAllParticipating();
-    const jids = Object.keys(grupos);
-    const mensaje = `🛠️ *${NOMBRE_BOT} entrará en actualización*\n\nEstaré fuera de servicio un momento mientras ${CREADOR} me instala mejoras nuevas ✨\nVersión actual: v${VERSION_BOT}\n\n¡Vuelvo enseguida más lista que nunca! 💖`;
     let enviados = 0;
-    for (const jid of jids) { try { await sock.sendMessage(jid, { text: mensaje }); enviados++; } catch (err) {} }
+    for (const jid of Object.keys(grupos)) { try { await sock.sendMessage(jid, { text: mensajeFinal }); enviados++; } catch (err) {} }
     await sock.sendMessage(jidChat, { text: `✅ Aviso enviado a ${enviados} grupo(s).` });
-  } catch (err) { await sock.sendMessage(jidChat, { text: 'No pude avisar a los grupos, intenta de nuevo.' }); }
+  } catch (err) { await sock.sendMessage(jidChat, { text: 'No pude generar/enviar el aviso, intenta de nuevo.' }); }
 }
 
 async function manejarComandosGenerales(sock, jidChat, jidUsuario, texto, mencionados, esGrupo, clavePendientePropietario) {
@@ -1299,59 +1177,38 @@ async function manejarComandosGenerales(sock, jidChat, jidUsuario, texto, mencio
     case '/recordatorio': {
       if (!esGrupo) { await sock.sendMessage(jidChat, { text: 'Solo funciona dentro de un grupo.' }); return true; }
       if (!(await esAdminGrupo(sock, jidChat, jidUsuario))) { await sock.sendMessage(jidChat, { text: 'Solo admins 🚫' }); return true; }
-      const entrada = resto[0] || '';
-      const textoRecordatorio = resto.slice(1).join(' ');
+      const entrada = resto[0] || ''; const textoRecordatorio = resto.slice(1).join(' ');
       const match = entrada.match(/^(\d+)([smh])$/i);
       if (!match || !textoRecordatorio) { await sock.sendMessage(jidChat, { text: 'Uso: /recordatorio <tiempo><S|M|H> <texto>' }); return true; }
-      const cantidad = parseInt(match[1], 10);
-      const unidad = match[2].toLowerCase();
+      const cantidad = parseInt(match[1], 10); const unidad = match[2].toLowerCase();
       const multiplicador = unidad === 's' ? 1000 : unidad === 'm' ? 60000 : 3600000;
       programarRecordatorioGrupo(jidChat, cantidad * multiplicador, textoRecordatorio);
       await sock.sendMessage(jidChat, { text: `⏰ Listo, aviso programado: "${textoRecordatorio}"` });
       return true;
     }
     case '/movimiento': case '/movimientos': if (!esGrupo) { await sock.sendMessage(jidChat, { text: 'Solo funciona dentro de un grupo.' }); return true; } await comandoMovimientos(sock, jidChat, jidUsuario, resto.join(' ')); return true;
-    case '/propietario': pendientesPropietario.set(clavePendientePropietario, Date.now()); await sock.sendMessage(jidChat, { text: '🔐 Escribe la contraseña de propietario para continuar:' }); return true;
+    case '/propietario': pendientesPropietario.set(clavePendientePropietario, Date.now()); await sock.sendMessage(jidChat, { text: '🔐 Escribe la contraseña de propietario:' }); return true;
     case '/silencio': {
       if (!(await tienePermisoClan(sock, jidChat, jidUsuario))) { await sock.sendMessage(jidChat, { text: 'Solo las admins o el propietario 🚫' }); return true; }
       if (!mencionados.length) { await sock.sendMessage(jidChat, { text: 'Menciona a quién silenciar.' }); return true; }
-      mencionados.forEach(j => SILENCIADOS.add(extraerNumero(j)));
-      guardarSilenciados();
+      mencionados.forEach(j => SILENCIADOS.add(extraerNumero(j))); guardarSilenciados();
       await sock.sendMessage(jidChat, { text: `🔇 Listo, dejé de responderle a ${mencionados.length} usuario(s).` });
       return true;
     }
     case '/activarse': {
       if (!(await tienePermisoClan(sock, jidChat, jidUsuario))) { await sock.sendMessage(jidChat, { text: 'Solo las admins o el propietario 🚫' }); return true; }
       if (!mencionados.length) { await sock.sendMessage(jidChat, { text: 'Menciona a quién reactivar.' }); return true; }
-      mencionados.forEach(j => SILENCIADOS.delete(extraerNumero(j)));
-      guardarSilenciados();
+      mencionados.forEach(j => SILENCIADOS.delete(extraerNumero(j))); guardarSilenciados();
       await sock.sendMessage(jidChat, { text: `🔊 Listo, ya vuelvo a responderle.` });
       return true;
     }
-    case '/novia': {
-      const sub = (resto[0] || '').toLowerCase();
-      if (sub === 'on') { activarModo(modoNovia, jidChat, jidUsuario); await sock.sendMessage(jidChat, { text: '💕 Listo mi amor, modo novia activado 😘' }); }
-      else if (sub === 'off') { desactivarTodosLosModos(jidChat, jidUsuario); await sock.sendMessage(jidChat, { text: '💫 Volví a mi forma normal.' }); }
-      else await sock.sendMessage(jidChat, { text: 'Uso:\n/novia on\n/novia off' });
-      return true;
-    }
-    case '/amiga': {
-      const sub = (resto[0] || '').toLowerCase();
-      if (sub === 'on') { activarModo(modoAmiga, jidChat, jidUsuario); await sock.sendMessage(jidChat, { text: '👯 Modo amiga activado 💕' }); }
-      else if (sub === 'off') { desactivarTodosLosModos(jidChat, jidUsuario); await sock.sendMessage(jidChat, { text: '☺️ Volví a mi forma normal.' }); }
-      else await sock.sendMessage(jidChat, { text: 'Uso:\n/amiga on\n/amiga off' });
-      return true;
-    }
+    case '/novia': { const sub = (resto[0] || '').toLowerCase(); if (sub === 'on') { activarModo(modoNovia, jidChat, jidUsuario); await sock.sendMessage(jidChat, { text: '💕 Modo novia activado 😘' }); } else if (sub === 'off') { desactivarTodosLosModos(jidChat, jidUsuario); await sock.sendMessage(jidChat, { text: '💫 Volví a mi forma normal.' }); } else await sock.sendMessage(jidChat, { text: 'Uso:\n/novia on\n/novia off' }); return true; }
+    case '/amiga': { const sub = (resto[0] || '').toLowerCase(); if (sub === 'on') { activarModo(modoAmiga, jidChat, jidUsuario); await sock.sendMessage(jidChat, { text: '👯 Modo amiga activado 💕' }); } else if (sub === 'off') { desactivarTodosLosModos(jidChat, jidUsuario); await sock.sendMessage(jidChat, { text: '☺️ Volví a mi forma normal.' }); } else await sock.sendMessage(jidChat, { text: 'Uso:\n/amiga on\n/amiga off' }); return true; }
     case '/info': await sock.sendMessage(jidChat, { text: generarTextoInfo() }); return true;
     case '/creador': await sock.sendMessage(jidChat, { text: TEXTO_CREADOR }); return true;
-    case '/actualizacion': await comandoActualizacion(sock, jidChat, jidUsuario); return true;
-    case '/recordar': {
-      const lista = memoriaPersistente[jidUsuario] || [];
-      if (!lista.length) { await sock.sendMessage(jidChat, { text: 'Aún no tengo nada guardado de ti 🤔' }); return true; }
-      await sock.sendMessage(jidChat, { text: `🧠 Esto recuerdo de ti:\n\n${lista.map(m => `👤 ${m.texto}\n🤖 ${m.respuesta}`).join('\n\n')}` });
-      return true;
-    }
-    case '/olvidarme': olvidarUsuario(jidUsuario); await sock.sendMessage(jidChat, { text: 'Listo, borré todo lo que recordaba de ti 🗑️' }); return true;
+    case '/actualizacion': await comandoActualizacion(sock, jidChat, jidUsuario, resto.join(' ')); return true;
+    case '/recordar': { const lista = memoriaPersistente[jidUsuario] || []; if (!lista.length) { await sock.sendMessage(jidChat, { text: 'Aún no tengo nada guardado de ti 🤔' }); return true; } await sock.sendMessage(jidChat, { text: `🧠 Esto recuerdo:\n\n${lista.map(m => `👤 ${m.texto}\n🤖 ${m.respuesta}`).join('\n\n')}` }); return true; }
+    case '/olvidarme': olvidarUsuario(jidUsuario); await sock.sendMessage(jidChat, { text: 'Listo, borré mi memoria de ti 🗑️' }); return true;
   }
   return false;
 }
@@ -1370,12 +1227,9 @@ async function procesarMensajeGrupo(sock, msg, identificadoresBot) {
     pendientesPropietario.delete(clavePendientePropietario);
     if (texto.trim() === CODIGO_DUEÑO) {
       const numeroReal = await resolverNumeroReal(sock, jidGrupo, jidUsuario);
-      propietariosVerificados.add(numeroReal);
-      guardarPropietariosEnNube();
+      if (numeroReal) { propietariosVerificados.add(numeroReal); guardarPropietariosEnNube(); }
       await sock.sendMessage(jidGrupo, { text: '👑 Contraseña correcta. Te reconozco como propietaria/o del bot.' });
-    } else {
-      await sock.sendMessage(jidGrupo, { text: '❌ Contraseña incorrecta. Escribe /propietario para intentar de nuevo.' });
-    }
+    } else { await sock.sendMessage(jidGrupo, { text: '❌ Contraseña incorrecta. Escribe /propietario para intentar de nuevo.' }); }
     return;
   }
 
@@ -1389,20 +1243,15 @@ async function procesarMensajeGrupo(sock, msg, identificadoresBot) {
   if (PATRON_COMANDO_FACEBOOK.test(texto)) { const m = texto.match(PATRON_COMANDO_FACEBOOK); await manejarComandoFacebook(sock, jidGrupo, m[1], 'video'); return; }
 
   if (esIntencionCompra(texto)) {
-    try {
-      await sock.sendMessage(jidGrupo, { text: 'Dame un toque que le aviso a Alberto 🙌', mentions: [jidUsuario] });
-      await sock.sendMessage(JID_DUEÑO, { text: `💰 Posible cliente en grupo: ${nombreContacto} preguntó: "${texto}"` });
-    } catch (err) {}
+    try { await sock.sendMessage(jidGrupo, { text: 'Dame un toque que le aviso a Alberto 🙌', mentions: [jidUsuario] }); await sock.sendMessage(JID_DUEÑO, { text: `💰 Posible cliente: ${nombreContacto} preguntó: "${texto}"` }); } catch (err) {}
     return;
   }
 
   const mencionados = msg.message.extendedTextMessage?.contextInfo?.mentionedJid || [];
   if (await manejarComandosClanUniversal(sock, jidGrupo, jidUsuario, texto, mencionados, msg)) return;
 
-  try {
-    const manejado = await manejarComandosGenerales(sock, jidGrupo, jidUsuario, texto, mencionados, true, clavePendientePropietario);
-    if (manejado) return;
-  } catch (err) { console.log('❌ Error en comando:', err.message); return; }
+  try { const manejado = await manejarComandosGenerales(sock, jidGrupo, jidUsuario, texto, mencionados, true, clavePendientePropietario); if (manejado) return; }
+  catch (err) { console.log('❌ Error en comando:', err.message); return; }
 
   if (!debeResponderIA(texto, msg, identificadoresBot)) return;
 
@@ -1410,10 +1259,22 @@ async function procesarMensajeGrupo(sock, msg, identificadoresBot) {
 
   const consultaSinMencion = texto.replace(/@\d+/g, '').replace(/^\/\S*\s*/, '').trim() || texto;
 
+  // ── AUDIO CITADO — se procesa antes que el flujo de texto normal ─────────
+  const audioCitado = extraerAudioCitado(msg);
+  if (audioCitado) {
+    try {
+      const bufferAudio = await descargarAudioCitado(audioCitado);
+      const respuesta = await generarRespuestaIAConAudio(bufferAudio, audioCitado.mimetype, consultaSinMencion || 'Escucha este audio y cuéntame de qué trata.', `Mensaje de ${nombreContacto} en un grupo.`, jidGrupo, jidUsuario);
+      await enviarRespuestaHumanizada(sock, jidGrupo, respuesta, [jidUsuario]);
+      agregarAMemoriaCorta(jidUsuario, texto, respuesta);
+    } catch (err) { console.log('❌ Error procesando audio citado:', err.message); await sock.sendMessage(jidGrupo, { text: '💔 No pude escuchar ese audio, intenta de nuevo.' }); }
+    return;
+  }
+
   if (mencionados.length && /\b(informaci[oó]n|informe|info|datos|ficha|perfil|foto)\b/i.test(consultaSinMencion)) {
     if (await tienePermisoClan(sock, jidGrupo, jidUsuario)) {
       const numero = await resolverNumeroReal(sock, jidGrupo, mencionados[0]);
-      const ficha = buscarIntegrantePorNumero(numero);
+      const ficha = numero ? buscarIntegrantePorNumero(numero) : null;
       if (ficha) { await enviarFichaCompleta(sock, jidGrupo, ficha); return; }
     }
   }
@@ -1422,10 +1283,7 @@ async function procesarMensajeGrupo(sock, msg, identificadoresBot) {
   if (nombreBuscado && await tienePermisoClan(sock, jidGrupo, jidUsuario)) {
     const encontrados = buscarIntegrantesPorNombre(nombreBuscado);
     if (encontrados.length === 1) { await enviarFichaCompleta(sock, jidGrupo, encontrados[0]); return; }
-    if (encontrados.length > 1) {
-      await sock.sendMessage(jidGrupo, { text: `Encontré varias coincidencias:\n\n${encontrados.map(f => `• ${f.nombre} (${f.apodo}) — código ${f.codigo}`).join('\n')}\n\nUsa /clan ver <código>.` });
-      return;
-    }
+    if (encontrados.length > 1) { await sock.sendMessage(jidGrupo, { text: `Varias coincidencias:\n\n${encontrados.map(f => `• ${f.nombre} (${f.apodo}) — código ${f.codigo}`).join('\n')}\n\nUsa /clan ver <código>.` }); return; }
   }
 
   try {
@@ -1438,28 +1296,21 @@ async function procesarMensajeGrupo(sock, msg, identificadoresBot) {
     const respuesta = await generarRespuestaIA(consultaSinMencion, notas, jidGrupo, jidUsuario);
     await enviarRespuestaHumanizada(sock, jidGrupo, respuesta, [jidUsuario]);
     agregarAMemoriaCorta(jidUsuario, texto, respuesta);
-  } catch (err) {
-    console.log('❌ Error IA:', err.message);
-    await sock.sendMessage(jidGrupo, { text: mensajeEsperaAleatorio() });
-  }
+  } catch (err) { console.log('❌ Error IA:', err.message); await sock.sendMessage(jidGrupo, { text: mensajeEsperaAleatorio() }); }
 }
 function registrarBienvenidasYDespedidas(sock) {
   sock.ev.on('group-participants.update', async (evento) => {
     const { id: jidGrupo, participants, action, author } = evento;
     let nombreGrupo = null;
-    try { const meta = await sock.groupMetadata(jidGrupo); nombreGrupo = meta.subject; } catch (err) {}
+    try { const meta = await sock.groupMetadata(jidGrupo); actualizarCacheLid(meta); nombreGrupo = meta.subject; } catch (err) {}
     for (const participanteRaw of participants) {
-      const { jid: jidParticipante } = normalizarParticipante(participanteRaw);
+      const { jid: jidParticipante, numero: numeroParticipante } = normalizarParticipante(participanteRaw);
       if (!jidParticipante) continue;
       if (['add', 'remove', 'promote', 'demote'].includes(action) && !accionFueDelBot(jidGrupo, action, jidParticipante)) {
-        await registrarAccionAdmin(sock, jidGrupo, action, author || null, [jidParticipante], nombreGrupo);
+        await registrarAccionAdmin(sock, jidGrupo, action, author || null, [jidParticipante], nombreGrupo, [numeroParticipante]);
       }
-      // ── AVISO DE SALIDA — si quien se fue/fue sacado tiene ficha en el clan ──
-      if (action === 'remove') {
-        const numeroSalio = extraerNumero(jidParticipante);
-        if (numeroEsValido(numeroSalio)) {
-          avisarSalidaIntegranteRegistrado(sock, jidGrupo, numeroSalio).catch(err => console.log('⚠️ Error avisando salida:', err.message));
-        }
+      if (action === 'remove' && esNumeroTelefonicoProbable(numeroParticipante)) {
+        avisarSalidaIntegranteRegistrado(sock, jidGrupo, numeroParticipante).catch(err => console.log('⚠️ Error avisando salida:', err.message));
       }
     }
   });
@@ -1477,21 +1328,12 @@ async function iniciarBot() {
   await verificarBinarioYtDlp();
   await actualizarSistema();
 
-  if (!nubeInicializada) {
-    await inicializarNubeIntegrantes();
-    await inicializarNubePropietarios();
-    nubeInicializada = true;
-  }
+  if (!nubeInicializada) { await inicializarNubeIntegrantes(); await inicializarNubePropietarios(); nubeInicializada = true; }
 
   const { state, saveCreds } = await useMultiFileAuthState('sesion');
   const { version } = await fetchLatestBaileysVersion();
 
-  const sock = makeWASocket({
-    auth: state, version, printQRInTerminal: false,
-    browser: [NOMBRE_BOT, 'Chrome', '2.0.0'], syncFullHistory: false, markOnlineOnConnect: true,
-    getMessage: async (key) => almacenMensajes.get(key.id) || undefined,
-    logger: pino({ level: 'error' })
-  });
+  const sock = makeWASocket({ auth: state, version, printQRInTerminal: false, browser: [NOMBRE_BOT, 'Chrome', '2.0.0'], syncFullHistory: false, markOnlineOnConnect: true, getMessage: async (key) => almacenMensajes.get(key.id) || undefined, logger: pino({ level: 'error' }) });
 
   sockActivo = sock;
   sock.ev.on('creds.update', saveCreds);
@@ -1500,11 +1342,7 @@ async function iniciarBot() {
   sock.ev.on('connection.update', async (update) => {
     const { connection, qr, lastDisconnect } = update;
     if (qr) { estado.ultimoQR = await QRCode.toDataURL(qr); qrcodeTerminal.generate(qr, { small: true }); }
-    if (connection === 'open') {
-      estado.conectado = true; estado.intentosReconexion = 0; estado.ultimoQR = null;
-      IDENTIFICADORES_BOT_CACHE = obtenerIdentificadoresBot(sock);
-      console.log('\n✅ BOT CONECTADO Y LISTO ✅');
-    }
+    if (connection === 'open') { estado.conectado = true; estado.intentosReconexion = 0; estado.ultimoQR = null; IDENTIFICADORES_BOT_CACHE = obtenerIdentificadoresBot(sock); console.log('\n✅ BOT CONECTADO Y LISTO ✅'); }
     if (connection === 'close') {
       estado.conectado = false;
       const motivo = lastDisconnect?.error?.output?.statusCode;
@@ -1531,13 +1369,8 @@ async function iniciarBot() {
 
         if (pendientesPropietario.has(remitente)) {
           pendientesPropietario.delete(remitente);
-          if (textoPersonal.trim() === CODIGO_DUEÑO) {
-            propietariosVerificados.add(extraerNumero(remitente));
-            guardarPropietariosEnNube();
-            await sock.sendMessage(remitente, { text: '👑 Contraseña correcta. Te reconozco como propietaria/o del bot.' });
-          } else {
-            await sock.sendMessage(remitente, { text: '❌ Contraseña incorrecta. Escribe /propietario para intentar de nuevo.' });
-          }
+          if (textoPersonal.trim() === CODIGO_DUEÑO) { propietariosVerificados.add(extraerNumero(remitente)); guardarPropietariosEnNube(); await sock.sendMessage(remitente, { text: '👑 Contraseña correcta. Te reconozco como propietaria/o.' }); }
+          else await sock.sendMessage(remitente, { text: '❌ Contraseña incorrecta. Escribe /propietario para intentar de nuevo.' });
           return;
         }
 
@@ -1552,28 +1385,30 @@ async function iniciarBot() {
 
         if (await manejarComandosClanUniversal(sock, remitente, remitente, textoPersonal, [], msg)) return;
 
-        if (esCodigoDueño(textoPersonal)) {
-          modoJefe.set(remitente, true);
-          await sock.sendMessage(remitente, { text: `🔐 Menú activado, jefe.\n\ninforme · apagar · encender · restaura · salir` });
-          return;
-        }
+        if (esCodigoDueño(textoPersonal)) { modoJefe.set(remitente, true); await sock.sendMessage(remitente, { text: `🔐 Menú activado, jefe.\n\ninforme · apagar · encender · restaura · salir` }); return; }
         if (modoJefe.get(remitente)) { await procesarComandoJefe(sock, remitente, textoPersonal); return; }
 
-        try {
-          const manejado = await manejarComandosGenerales(sock, remitente, remitente, textoPersonal, [], false, remitente);
-          if (manejado) return;
-        } catch (err) { return; }
+        try { const manejado = await manejarComandosGenerales(sock, remitente, remitente, textoPersonal, [], false, remitente); if (manejado) return; } catch (err) { return; }
 
         if (debeResponderIA(textoPersonal, msg, IDENTIFICADORES_BOT_CACHE)) {
           const consultaSinMencion = textoPersonal.replace(/^\/\S*\s*/, '').trim() || textoPersonal;
+
+          const audioCitado = extraerAudioCitado(msg);
+          if (audioCitado) {
+            try {
+              const bufferAudio = await descargarAudioCitado(audioCitado);
+              const respuesta = await generarRespuestaIAConAudio(bufferAudio, audioCitado.mimetype, consultaSinMencion || 'Escucha este audio y cuéntame de qué trata.', `Mensaje privado de ${msg.pushName || 'un usuario'}.`, remitente, remitente);
+              await enviarRespuestaHumanizada(sock, remitente, respuesta, []);
+              agregarAMemoriaCorta(remitente, textoPersonal, respuesta);
+            } catch (err) { await sock.sendMessage(remitente, { text: '💔 No pude escuchar ese audio.' }); }
+            return;
+          }
+
           const nombreBuscado = detectarSolicitudInfoPorNombre(consultaSinMencion);
           if (nombreBuscado && esPropietarioEfectivo(remitente)) {
             const encontrados = buscarIntegrantesPorNombre(nombreBuscado);
             if (encontrados.length === 1) { await enviarFichaCompleta(sock, remitente, encontrados[0]); return; }
-            if (encontrados.length > 1) {
-              await sock.sendMessage(remitente, { text: `Encontré varias coincidencias:\n\n${encontrados.map(f => `• ${f.nombre} (${f.apodo}) — código ${f.codigo}`).join('\n')}\n\nUsa /clan ver <código>.` });
-              return;
-            }
+            if (encontrados.length > 1) { await sock.sendMessage(remitente, { text: `Varias coincidencias:\n\n${encontrados.map(f => `• ${f.nombre} (${f.apodo}) — código ${f.codigo}`).join('\n')}\n\nUsa /clan ver <código>.` }); return; }
           }
           try {
             const esDueño = esPropietarioEfectivo(remitente);
@@ -1606,15 +1441,13 @@ setInterval(async () => {
   if (!sockActivo || recordatoriosGrupo.length === 0) return;
   const ahora = Date.now();
   for (let i = recordatoriosGrupo.length - 1; i >= 0; i--) {
-    if (recordatoriosGrupo[i].tiempoEjecucion <= ahora) {
-      const r = recordatoriosGrupo[i];
-      try { await sockActivo.sendMessage(r.jidGrupo, { text: `⏰ Recordatorio: ${r.texto}` }); } catch (err) {}
-      recordatoriosGrupo.splice(i, 1);
-    }
+    if (recordatoriosGrupo[i].tiempoEjecucion <= ahora) { const r = recordatoriosGrupo[i]; try { await sockActivo.sendMessage(r.jidGrupo, { text: `⏰ Recordatorio: ${r.texto}` }); } catch (err) {} recordatoriosGrupo.splice(i, 1); }
   }
 }, 30 * 1000);
+const PANEL_FONDO_URL = limpiarValorEnv(process.env.PANEL_FONDO_URL) || '';
+
 const LISTA_COMANDOS_PANEL = [
-  { cat: '🧠 Inteligencia Artificial', items: [['/anzy <pregunta>', 'Pregúntale a la IA'], ['@bot <pregunta>', 'Mencionando al bot'], ['/imagen <descripción>', 'Genera una imagen con IA']] },
+  { cat: '🧠 Inteligencia Artificial', items: [['/anzy <pregunta>', 'Pregúntale a la IA'], ['@bot <pregunta>', 'Mencionando al bot'], ['Cita un audio + menciona', 'Entiende y responde sobre el audio 🎙️'], ['/imagen <descripción>', 'Genera una imagen con IA']] },
   { cat: '🎭 Modos', items: [['/novia on · off', 'Modo cariñoso'], ['/amiga on · off', 'Modo amiga']] },
   { cat: '🎉 Descargas', items: [['/tiktok <enlace>', 'TikTok sin marca de agua'], ['/youtube <enlace>', 'Audio de YouTube'], ['/youtubevideo <enlace>', 'Video de YouTube'], ['/facebook <enlace>', 'Video de Facebook'], ['/facebookaudio <enlace>', 'Audio de Facebook']] },
   { cat: '🎉 Utilidades', items: [['/frase', 'Frase random'], ['/perfil @user', 'Actividad en el grupo']] },
@@ -1626,8 +1459,8 @@ const LISTA_COMANDOS_PANEL = [
     ['/clan agregar/quitar/ver', 'Gestión del clan'], ['/eliminar <código>', 'Elimina integrante'],
     ['/integrantes · /lista NN', 'Ver el clan'], ['/integrante @user', 'Ficha de esa persona'],
     ['/silencio · /activarse @user', 'Ignorar/reactivar usuario'], ['/movimiento', 'Últimos movimientos'],
-    ['/actualizacion', 'Avisa mantenimiento a todos los grupos'],
-    ['Aviso de salida', 'Si un integrante del clan sale del grupo, te llega su ficha por privado con opción de eliminarlo']
+    ['/actualizacion <mejoras>', 'La IA redacta el aviso de mantenimiento y lo manda a todos los grupos'],
+    ['Aviso de salida', 'Si un integrante sale del grupo, el aviso+ficha+foto se manda AL MISMO GRUPO; solo tú confirmas la eliminación']
   ] },
   { cat: '📋 Info', items: [['/info', 'Info del bot'], ['/creador', 'Quién lo hizo'], ['/comando anzy', 'Lista pública']] },
   { cat: '🗂️ Memoria', items: [['/recordar', 'Qué recuerda de ti'], ['/olvidarme', 'Borra su memoria']] }
@@ -1636,39 +1469,26 @@ const LISTA_COMANDOS_PANEL = [
 function generarHtmlComandos() {
   return LISTA_COMANDOS_PANEL.map(grupo => `
     <div class="cat-titulo">${grupo.cat}</div>
-    <div class="cmd-grid">
-      ${grupo.items.map(([nombre, desc]) => `<div class="cmd-card"><div class="cmd-nombre">${nombre}</div><div class="cmd-desc">${desc}</div></div>`).join('')}
-    </div>
+    <div class="cmd-grid">${grupo.items.map(([nombre, desc]) => `<div class="cmd-card"><div class="cmd-nombre">${nombre}</div><div class="cmd-desc">${desc}</div></div>`).join('')}</div>
   `).join('');
 }
 
 const app = express();
 
 app.get('/status', (req, res) => {
-  res.json({
-    conectado: estado.conectado, botActivo,
-    uptimeSegundos: Math.floor((Date.now() - estado.inicio) / 1000),
-    mensajesRecibidos: estado.mensajesRecibidos, mensajesEnviados: estado.mensajesEnviados,
-    intentosReconexion: estado.intentosReconexion,
-    cuotaUsada: contadorCuota.usados, cuotaLimite: LIMITE_DIARIO_ESTIMADO,
-    version: VERSION_BOT
-  });
+  res.json({ conectado: estado.conectado, botActivo, uptimeSegundos: Math.floor((Date.now() - estado.inicio) / 1000), mensajesRecibidos: estado.mensajesRecibidos, mensajesEnviados: estado.mensajesEnviados, intentosReconexion: estado.intentosReconexion, cuotaUsada: contadorCuota.usados, cuotaLimite: LIMITE_DIARIO_ESTIMADO, version: VERSION_BOT });
 });
 
-// ── CONTROLES DEL PANEL — protegidos con tu contraseña de propietario ──────
-app.get('/panel/toggle', (req, res) => {
-  if (req.query.clave !== CODIGO_DUEÑO) return res.status(401).send('No autorizado');
-  botActivo = !botActivo;
-  res.redirect('/');
-});
+// ── Sin contraseña — solo tú tienes el enlace del panel ────────────────────
+app.get('/panel/toggle', (req, res) => { botActivo = !botActivo; res.redirect('/'); });
 
 app.get('/panel/actualizacion', async (req, res) => {
-  if (req.query.clave !== CODIGO_DUEÑO) return res.status(401).send('No autorizado');
   if (sockActivo) {
     try {
+      const anuncio = await generarAnuncioActualizacionIA(req.query.mejoras || '');
+      const mensajeFinal = `${anuncio}\n\n_Versión actual: v${VERSION_BOT}_\n\n> ${CREADOR}`;
       const grupos = await sockActivo.groupFetchAllParticipating();
-      const mensaje = `🛠️ *${NOMBRE_BOT} entrará en actualización*\n\nVersión actual: v${VERSION_BOT}\n¡Vuelvo enseguida más lista que nunca! 💖`;
-      for (const jid of Object.keys(grupos)) { try { await sockActivo.sendMessage(jid, { text: mensaje }); } catch (err) {} }
+      for (const jid of Object.keys(grupos)) { try { await sockActivo.sendMessage(jid, { text: mensajeFinal }); } catch (err) {} }
     } catch (err) {}
   }
   res.redirect('/');
@@ -1685,8 +1505,12 @@ app.get('/', (req, res) => {
 <link href="https://fonts.googleapis.com/css2?family=Creepster&family=Orbitron:wght@500;700;900&family=Space+Mono&display=swap" rel="stylesheet">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: radial-gradient(circle at 20% 0%, #2a0015 0%, #0a0005 55%, #000000 100%); color: #ffd6e8; font-family: 'Space Mono', monospace; min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 50px 20px 70px; overflow-x: hidden; position: relative; }
-  .blob { position: fixed; border-radius: 50%; filter: blur(100px); opacity: 0.4; z-index: 0; pointer-events: none; }
+  body {
+    background-color: #0a0005;
+    ${PANEL_FONDO_URL ? `background-image: linear-gradient(rgba(10,0,5,0.75), rgba(10,0,5,0.9)), url('${PANEL_FONDO_URL}'); background-size: cover; background-position: center; background-attachment: fixed;` : `background-image: radial-gradient(circle at 20% 0%, #2a0015 0%, #0a0005 55%, #000000 100%);`}
+    color: #ffd6e8; font-family: 'Space Mono', monospace; min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 50px 20px 70px; overflow-x: hidden; position: relative;
+  }
+  .blob { position: fixed; border-radius: 50%; filter: blur(100px); opacity: 0.35; z-index: 0; pointer-events: none; }
   .blob1 { width: 420px; height: 420px; background: #ff0044; top: -120px; left: -140px; animation: flotar1 10s ease-in-out infinite; }
   .blob2 { width: 360px; height: 360px; background: #6a0033; bottom: -100px; right: -120px; animation: flotar2 13s ease-in-out infinite; }
   @keyframes flotar1 { 0%,100% { transform: translate(0,0); } 50% { transform: translate(50px,70px); } }
@@ -1696,30 +1520,30 @@ app.get('/', (req, res) => {
   h1 { font-family: 'Creepster', cursive; font-weight: 400; font-size: 56px; letter-spacing: 6px; color: #ff0044; text-align: center; position: relative; z-index: 1; text-shadow: 0 0 20px #ff0044, 0 0 40px #6a0033; animation: glitch 4s infinite; }
   @keyframes glitch { 0%,96%,100% { transform: translate(0,0); } 97% { transform: translate(-2px,1px); } 98% { transform: translate(2px,-1px); } 99% { transform: translate(-1px,0px); } }
   .goteo { width: 100%; max-width: 500px; height: 6px; background: repeating-linear-gradient(90deg, #ff0044 0 4px, transparent 4px 20px); margin: 10px 0 30px; position: relative; z-index: 1; }
-  .sub { color: #b3597a; font-size: 12px; letter-spacing: 3px; margin-bottom: 34px; text-transform: uppercase; position: relative; z-index: 1; }
+  .sub { color: #d999b3; font-size: 12px; letter-spacing: 3px; margin-bottom: 34px; text-transform: uppercase; position: relative; z-index: 1; }
   .badge { padding: 10px 26px; border-radius: 30px; font-family: 'Orbitron', sans-serif; font-weight: 700; font-size: 13px; letter-spacing: 2px; display: flex; align-items: center; gap: 10px; margin-bottom: 20px; position: relative; z-index: 1; }
   .dot { width: 10px; height: 10px; border-radius: 50%; }
-  .online { background: rgba(255,0,68,0.1); border: 1px solid #ff0044; color: #ff0044; }
+  .online { background: rgba(255,0,68,0.12); border: 1px solid #ff0044; color: #ff0044; }
   .online .dot { background: #ff0044; box-shadow: 0 0 10px #ff0044; animation: pulso 1.2s infinite; }
-  .offline { background: rgba(100,100,100,0.1); border: 1px solid #555; color: #999; }
+  .offline { background: rgba(100,100,100,0.12); border: 1px solid #555; color: #bbb; }
   .offline .dot { background: #666; }
   @keyframes pulso { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
   .controles { display: flex; gap: 12px; margin-bottom: 30px; position: relative; z-index: 1; flex-wrap: wrap; justify-content: center; }
   .btn-control { background: linear-gradient(160deg, #6a0033, #2a0015); border: 1px solid #ff0044; color: #ffd6e8; font-family: 'Orbitron', sans-serif; font-size: 11px; letter-spacing: 1px; padding: 10px 18px; border-radius: 8px; cursor: pointer; text-decoration: none; transition: box-shadow .2s, transform .2s; }
   .btn-control:hover { box-shadow: 0 0 18px #ff0044; transform: translateY(-2px); }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 16px; width: 100%; max-width: 900px; position: relative; z-index: 1; }
-  .card { background: linear-gradient(160deg, rgba(60,0,25,0.85), rgba(10,0,5,0.9)); border: 1px solid rgba(255,0,68,0.35); border-radius: 14px; padding: 20px; text-align: center; box-shadow: 0 0 20px rgba(255,0,68,0.1); }
+  .card { background: linear-gradient(160deg, rgba(60,0,25,0.85), rgba(10,0,5,0.9)); border: 1px solid rgba(255,0,68,0.35); border-radius: 14px; padding: 20px; text-align: center; box-shadow: 0 0 20px rgba(255,0,68,0.12); }
   .card .valor { font-family: 'Orbitron', sans-serif; font-size: 26px; color: #ffd6e8; font-weight: 700; }
-  .card .etiqueta { font-size: 10px; color: #b3597a; margin-top: 8px; text-transform: uppercase; letter-spacing: 1.5px; }
+  .card .etiqueta { font-size: 10px; color: #d999b3; margin-top: 8px; text-transform: uppercase; letter-spacing: 1.5px; }
   .seccion { margin-top: 40px; margin-bottom: 14px; font-family: 'Orbitron', sans-serif; font-size: 13px; letter-spacing: 3px; color: #ff0044; text-transform: uppercase; align-self: flex-start; max-width: 900px; width: 100%; position: relative; z-index: 1; text-shadow: 0 0 8px #ff0044; }
-  .barra-fondo { width: 100%; max-width: 900px; height: 16px; background: rgba(255,255,255,0.05); border-radius: 10px; overflow: hidden; border: 1px solid rgba(255,0,68,0.3); position: relative; z-index: 1; }
+  .barra-fondo { width: 100%; max-width: 900px; height: 16px; background: rgba(255,255,255,0.06); border-radius: 10px; overflow: hidden; border: 1px solid rgba(255,0,68,0.3); position: relative; z-index: 1; }
   .barra-relleno { height: 100%; background: linear-gradient(90deg, #ff0044, #6a0033); box-shadow: 0 0 10px #ff0044; }
   .cat-titulo { font-family: 'Orbitron', sans-serif; font-size: 14px; letter-spacing: 2px; color: #ff6ea3; margin: 26px 0 12px; text-transform: uppercase; width: 100%; max-width: 900px; position: relative; z-index: 1; }
   .cmd-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; width: 100%; max-width: 900px; position: relative; z-index: 1; }
-  .cmd-card { background: rgba(40,0,15,0.75); border: 1px solid rgba(255,0,68,0.25); border-radius: 10px; padding: 12px 16px; transition: border-color .2s, box-shadow .2s; }
+  .cmd-card { background: rgba(40,0,15,0.8); border: 1px solid rgba(255,0,68,0.25); border-radius: 10px; padding: 12px 16px; transition: border-color .2s, box-shadow .2s; }
   .cmd-card:hover { border-color: #ff0044; box-shadow: 0 0 16px rgba(255,0,68,0.3); }
   .cmd-nombre { font-family: 'Orbitron', sans-serif; font-size: 12px; color: #ff6ea3; letter-spacing: 1px; }
-  .cmd-desc { font-size: 11px; color: #b3597a; margin-top: 4px; }
+  .cmd-desc { font-size: 11px; color: #d999b3; margin-top: 4px; }
   #qr { margin-top: 30px; position: relative; z-index: 1; }
   #qr img { border-radius: 14px; border: 2px solid rgba(255,0,68,0.4); box-shadow: 0 0 30px rgba(255,0,68,0.3); }
 </style>
@@ -1733,8 +1557,8 @@ app.get('/', (req, res) => {
   <div class="sub">Panel de control tenebroso · ${CREADOR}</div>
   <div id="badge" class="badge offline"><div class="dot"></div>Cargando...</div>
   <div class="controles">
-    <a href="#" class="btn-control" onclick="const c=prompt('Contraseña de propietario:'); if(c) window.location.href='/panel/toggle?clave='+encodeURIComponent(c); return false;">⚡ Encender / Apagar bot</a>
-    <a href="#" class="btn-control" onclick="const c=prompt('Contraseña de propietario:'); if(c) window.location.href='/panel/actualizacion?clave='+encodeURIComponent(c); return false;">🛠️ Avisar actualización</a>
+    <a href="/panel/toggle" class="btn-control">⚡ Encender / Apagar bot</a>
+    <a href="/panel/actualizacion" class="btn-control">🛠️ Avisar actualización</a>
   </div>
   <div class="seccion">Actividad</div>
   <div class="grid">
@@ -1744,19 +1568,13 @@ app.get('/', (req, res) => {
     <div class="card"><div class="valor" id="reint">0</div><div class="etiqueta">Reconexiones</div></div>
   </div>
   <div class="seccion">Cuota de IA hoy</div>
-  <div class="grid">
-    <div class="card" style="grid-column: 1 / -1">
-      <div class="valor" id="cuotaTexto">0 / 0</div>
-      <div class="barra-fondo" style="margin-top:14px"><div class="barra-relleno" id="cuotaBarra" style="width:0%"></div></div>
-    </div>
-  </div>
+  <div class="grid"><div class="card" style="grid-column: 1 / -1"><div class="valor" id="cuotaTexto">0 / 0</div><div class="barra-fondo" style="margin-top:14px"><div class="barra-relleno" id="cuotaBarra" style="width:0%"></div></div></div></div>
   <div class="seccion" style="margin-top:50px">Comandos disponibles</div>
   ${generarHtmlComandos()}
   <div id="qr"></div>
   <script>
     async function actualizar() {
-      const r = await fetch('/status');
-      const d = await r.json();
+      const r = await fetch('/status'); const d = await r.json();
       const badge = document.getElementById('badge');
       badge.innerHTML = '<div class="dot"></div>' + (d.conectado ? (d.botActivo ? 'CONECTADO' : 'CONECTADO (bot apagado)') : 'DESCONECTADO') + ' · v' + d.version;
       badge.className = 'badge ' + (d.conectado ? 'online' : 'offline');
