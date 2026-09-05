@@ -46,7 +46,7 @@ function limpiarArchivosTemporalesViejos() {
     const archivos = fs.readdirSync(__dirname);
     let borrados = 0;
     for (const archivo of archivos) {
-      if (/^temp_tiktok_/.test(archivo) || /^temp_youtube_/.test(archivo) || /^temp_facebook_/.test(archivo)) {
+      if (/^temp_tiktok_/.test(archivo) || /^temp_youtube_/.test(archivo) || /^temp_facebook_/.test(archivo) || /^temp_instagram_/.test(archivo)) {
         try { fs.unlinkSync(path.join(__dirname, archivo)); borrados++; } catch {}
       }
     }
@@ -146,6 +146,8 @@ async function manejarComandoTiktok(sock, jidDestino, enlace) {
 
 const ENLACE_YOUTUBE = /(?:https?:\/\/)?(?:www\.|m\.|music\.)?(?:youtube\.com\/(?:watch\?v=|shorts\/)|youtu\.be\/)[^\s]+/i;
 const ENLACE_FACEBOOK = /(?:https?:\/\/)?(?:www\.|m\.|web\.)?(?:facebook\.com|fb\.watch)\/[^\s]+/i;
+// 🆕 Nuevo: enlaces de Instagram (reels, publicaciones, IGTV)
+const ENLACE_INSTAGRAM = /(?:https?:\/\/)?(?:www\.)?instagram\.com\/(?:reel|reels|p|tv)\/[^\s]+/i;
 const URL_DESCARGAS = limpiarValorEnv(process.env.URL_DESCARGAS) || 'https://mini-servidor.onrender.com';
 const CLAVE_API_DESCARGAS = limpiarValorEnv(process.env.CLAVE_API_DESCARGAS) || 'Albert292776';
 
@@ -221,6 +223,28 @@ async function manejarComandoFacebook(sock, jidDestino, enlace, tipo) {
   finally { if (rutaTemporal && fs.existsSync(rutaTemporal)) { try { fs.unlinkSync(rutaTemporal); } catch {} } }
 }
 
+// 🆕 INSTAGRAM — mismo patrón que YouTube/Facebook: llama al mini-servidor
+async function descargarVideoInstagram(url) {
+  const parametros = new URLSearchParams({ url });
+  if (CLAVE_API_DESCARGAS) parametros.set('clave', CLAVE_API_DESCARGAS);
+  const respuesta = await fetch(`${URL_DESCARGAS}/instagram?${parametros.toString()}`);
+  if (!respuesta.ok) throw new Error(`El descargador respondió ${respuesta.status}: ${String(await extraerDetalleError(respuesta)).slice(0, 300)}`);
+  const buffer = Buffer.from(await respuesta.arrayBuffer());
+  if (buffer.length < 5000) throw new Error('Archivo demasiado pequeño.');
+  const rutaTemporal = path.join(__dirname, `temp_instagram_${Date.now()}.mp4`);
+  fs.writeFileSync(rutaTemporal, buffer);
+  return rutaTemporal;
+}
+
+async function manejarComandoInstagram(sock, jidDestino, enlace) {
+  if (!ENLACE_INSTAGRAM.test(enlace)) { await sock.sendMessage(jidDestino, { text: '📸 Uso: /instagram <enlace>' }); return; }
+  await sock.sendMessage(jidDestino, { text: '🎬 Descargando el video de Instagram...' });
+  let rutaTemporal = null;
+  try { rutaTemporal = await descargarVideoInstagram(enlace); await sock.sendMessage(jidDestino, { video: { url: rutaTemporal }, caption: '🎥 ¡Aquí está tu video! ✨' }); }
+  catch (err) { await sock.sendMessage(jidDestino, { text: `💔 No pude descargar ese video de Instagram. Detalle: ${err.message.slice(0, 150)}` }); }
+  finally { if (rutaTemporal && fs.existsSync(rutaTemporal)) { try { fs.unlinkSync(rutaTemporal); } catch {} } }
+}
+
 function obtenerTextoMensaje(msg) {
   return (msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || '').trim();
 }
@@ -231,23 +255,20 @@ const PATRON_COMANDO_YOUTUBE = /^\/youtube\s+(\S+)/i;
 const PATRON_COMANDO_YOUTUBEVIDEO = /^\/youtubevideo\s+(\S+)/i;
 const PATRON_COMANDO_FACEBOOK_AUDIO = /^\/facebookaudio\s+(\S+)/i;
 const PATRON_COMANDO_FACEBOOK = /^\/facebook\s+(\S+)/i;
+// 🆕 Patrón de comando de Instagram
+const PATRON_COMANDO_INSTAGRAM = /^\/instagram\s+(\S+)/i;
 const CLAVE_IA_PRINCIPAL = process.env.CLAVE_IA_PRINCIPAL;
 const CLAVE_IA_RESPALDO = process.env.CLAVE_IA_RESPALDO;
 const CLAVE_IA_RESPALDO2 = process.env.CLAVE_IA_RESPALDO2;
 const MODELO_PRINCIPAL = 'gemini-3.6-flash';
 const MODELO_RESPALDO = 'gemini-3.6-flash';
 const MODELO_RESPALDO2 = 'gemini-3.6-flash';
-
-// ⚠️ Según tus logs, este es el ÚNICO modelo de imagen que existe de verdad
-// para tu API — el resto de nombres que probábamos antes daban 404 (no
-// existen). Si vuelve a fallar con 429, es CUOTA/FACTURACIÓN de tu cuenta,
-// no un bug — revisa https://ai.google.dev/gemini-api/docs/rate-limits
 const MODELO_IMAGEN = 'gemini-2.5-flash-image';
 
 const CODIGO_DUEÑO = '2927760128';
 const NOMBRE_BOT = 'Anzy';
 const CREADOR = 'Albert Drak';
-const VERSION_BOT = '3.2.0';
+const VERSION_BOT = '3.3.0';
 const TU_NUMERO = '51996399291';
 const NUMERO_BOT_VINCULADO = '51975922748';
 const JID_DUEÑO = `${TU_NUMERO}@s.whatsapp.net`;
@@ -278,6 +299,7 @@ const TEXTO_AYUDA = `*COMANDOS · ${NOMBRE_BOT}*
 • /youtubevideo <enlace> — video 🎬
 • /facebook <enlace> — video
 • /facebookaudio <enlace> — audio
+• /instagram <enlace> — video 📸
 
 🎉 *Diversión y utilidades*
 • /frase
@@ -335,8 +357,8 @@ CÓMO ERES:
 🚨 CRISIS REAL: responde con calidez genuina y anímalo a hablar con un profesional.
 `;
 
-const REGLAS_MODO_AMIGA = `\n\n👯 MODO AMIGA ACTIVO: háblale como su mejor amiga — cercana, relajada, bromista. Nada de tono romántico.`;
-const REGLAS_MODO_NOVIA = `\n\n💘 MODO NOVIA ACTIVO: háblale como su novia virtual — cariñosa, coqueta. Nunca vulgar ni contenido sexual explícito.`;
+const REGLAS_MODO_AMIGA = `\n\n👯 MODO AMIGA ACTIVO: háblale como su mejor amiga — cercana, relajada, bromista. tono de amiga pero interesada en el.`;
+const REGLAS_MODO_NOVIA = `\n\n💘 MODO NOVIA ACTIVO: háblale como su novia virtual — cariñosa, coqueta. un poco de comtenido sexual en la forma de expresarseo.`;
 
 const MENSAJES_ESPERA = ['💫 Dame un segundito 🥰', '🌸 Un momentito, ya vuelvo 💕', '✨ Dame un momento 🙈', '💖 Inténtalo de nuevo en un ratito 🌷'];
 function mensajeEsperaAleatorio() { return MENSAJES_ESPERA[Math.floor(Math.random() * MENSAJES_ESPERA.length)]; }
@@ -437,9 +459,7 @@ async function generarRespuestaIA(prompt, notasExtra, jidChat, jidUsuario) {
   throw new Error('No hay ningún token de IA configurado');
 }
 
-// ── ENTENDER AUDIOS — se cita un audio + se menciona al bot ────────────────
-// ⚠️ Requiere que tu modelo/clave soporte entrada de audio (multimodal). Si
-// falla, revisa el error en logs igual que hicimos con las imágenes.
+// ── ENTENDER AUDIOS — se cita un audio + se menciona al bot (ya incluido) ──
 function extraerAudioCitado(msg) {
   const citado = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
   if (!citado || !citado.audioMessage) return null;
@@ -474,8 +494,6 @@ async function generarRespuestaIAConAudio(bufferAudio, mimetype, promptTexto, no
   }
   throw new Error('Ningún modelo pudo procesar el audio.');
 }
-
-// ── Genera mensajes cortos VARIADOS (nunca el mismo texto dos veces) ────────
 const FRASES_AVISO_SALIDA_FALLBACK = ['Ay, mira quién se fue del grupo... y sí lo tenía fichado en el clan 👀', 'Se me salió alguien del grupo y ¡sorpresa! está en mi lista 📋', 'Alguien se despidió del grupo, pero yo sí lo tenía registrado 💅'];
 const FRASES_CONFIRMACION_ELIMINACION_FALLBACK = ['Listo, su registro ya no está en la lista del clan 🗑️', 'Su ficha ya fue eliminada de la lista 💔', 'Ya quité su registro, todo limpio 📋✨'];
 
@@ -486,7 +504,6 @@ async function generarMensajeVariadoIA(instruccion, fallbackLista) {
   } catch (err) { return fallbackLista[Math.floor(Math.random() * fallbackLista.length)]; }
 }
 
-// ── GENERACIÓN DE IMÁGENES — un solo modelo real, con diagnóstico claro ────
 async function generarImagenIA(prompt) {
   for (const cliente of CLIENTES_IA) {
     try {
@@ -552,11 +569,6 @@ function extraerTextoCitado(msg) {
   return citado.conversation || citado.extendedTextMessage?.text || null;
 }
 
-// ── CORRECCIÓN DE NÚMEROS ────────────────────────────────────────────────
-// Un número real de WhatsApp casi nunca pasa de 12-13 dígitos con código de
-// país incluido. Los identificadores internos (LID) que a veces WhatsApp usa
-// en vez del número real suelen ser mucho más largos (15-16 dígitos) — por
-// eso salían números "imposibles". Esta función distingue ambos casos.
 function numeroEsValido(numero) { return !!numero && numero.length >= 8 && numero.length <= 15; }
 function esNumeroTelefonicoProbable(numero) { return !!numero && numero.length >= 8 && numero.length <= 13; }
 
@@ -566,9 +578,6 @@ function extraerNumero(jid) {
   return parteSinServidor.replace(/[^0-9]/g, '');
 }
 
-// PRIORIZA el número real (phoneNumber) que WhatsApp entrega directo en el
-// propio evento — esto es lo más confiable, sobre todo cuando alguien acaba
-// de salir del grupo (ya no se le puede buscar en la lista de participantes).
 function normalizarParticipante(participanteRaw) {
   if (typeof participanteRaw === 'string') return { jid: participanteRaw, numero: extraerNumero(participanteRaw) };
   const jid = participanteRaw?.id || participanteRaw?.jid || '';
@@ -576,10 +585,6 @@ function normalizarParticipante(participanteRaw) {
   return { jid, numero: numeroReal || extraerNumero(jid) };
 }
 
-// Caché: una vez que vemos, en cualquier momento, tanto el LID como el
-// número real de alguien (mientras siga en el grupo), lo recordamos — así
-// si más tarde sale del grupo y solo tenemos su LID, igual sabemos su
-// número real.
 const MAPA_LID_A_NUMERO = new Map();
 function actualizarCacheLid(metadata) {
   if (!metadata || !Array.isArray(metadata.participants)) return;
@@ -608,7 +613,7 @@ async function resolverNumeroReal(sock, jidChat, jidObjetivo) {
     } catch (err) {}
     if (MAPA_LID_A_NUMERO.has(numeroDirecto)) return MAPA_LID_A_NUMERO.get(numeroDirecto);
   }
-  return null; // no se pudo determinar con certeza — mejor no mostrar nada que mostrar basura
+  return null;
 }
 
 function esPropietario(numero) { return numero === TU_NUMERO; }
@@ -790,8 +795,6 @@ const ACCIONES_BOT_RECIENTES = new Set();
 function marcarAccionBotReciente(jidGrupo, accion, jids) { jids.forEach(jid => { const clave = `${jidGrupo}:${accion}:${extraerNumero(jid)}`; ACCIONES_BOT_RECIENTES.add(clave); setTimeout(() => ACCIONES_BOT_RECIENTES.delete(clave), 10000); }); }
 function accionFueDelBot(jidGrupo, accion, jid) { return ACCIONES_BOT_RECIENTES.has(`${jidGrupo}:${accion}:${extraerNumero(jid)}`); }
 
-// ── Ahora acepta números YA CONOCIDOS (del propio evento) para no depender
-// de buscar en la lista de participantes cuando la persona ya se fue. ──────
 async function registrarAccionAdmin(sock, jidGrupo, accionOriginal, jidEjecutor, jidsObjetivo, nombreGrupoTexto, numerosConocidos) {
   let accion = accionOriginal;
   const numeroEjecutorReal = jidEjecutor ? await resolverNumeroReal(sock, jidGrupo, jidEjecutor) : null;
@@ -913,7 +916,6 @@ function generarResumenClan() {
   if (paginas <= 1) return primeraPagina;
   return `${primeraPagina}\n\nHay ${paginas} páginas (${lista.length} integrantes):\n${Array.from({ length: paginas - 1 }, (_, i) => `/lista ${String(i + 2).padStart(2, '0')}`).join('\n')}`;
 }
-
 async function comandoClanAgregar(sock, jidChat, jidUsuario, textoCompleto) {
   if (!(await tienePermisoClan(sock, jidChat, jidUsuario))) { await sock.sendMessage(jidChat, { text: 'Solo las admins o el propietario pueden registrar integrantes 🚫' }); return; }
   const partes = textoCompleto.split(';').map(p => p.trim()).filter(Boolean);
@@ -935,8 +937,6 @@ async function comandoClanVer(sock, jidChat, criterio) {
   await enviarFichaCompleta(sock, jidChat, ficha);
 }
 
-// ── /eliminar <código> — MÁS SIMPLE: si el código corresponde a un aviso de
-// salida pendiente, SOLO el propietario puede confirmar la eliminación. ────
 async function comandoEliminarPorCodigo(sock, jidChat, jidUsuario, codigo) {
   if (!codigo || !/^\d{1,2}$/.test(codigo)) { await sock.sendMessage(jidChat, { text: 'Uso: /eliminar <código de dos cifras>' }); return; }
   const codigoNormalizado = codigo.padStart(2, '0');
@@ -1014,8 +1014,7 @@ async function comandoCampoIntegrante(sock, jidChat, jidUsuario, campo, valor) {
   }
 }
 
-// ── SISTEMA DE AVISO DE SALIDA — todo en el mismo grupo, simple ────────────
-const pendingSalidasClan = new Map(); // codigo -> { jidGrupoOrigen, fecha }
+const pendingSalidasClan = new Map();
 
 async function avisarSalidaIntegranteRegistrado(sock, jidGrupo, numeroSalio) {
   const ficha = buscarIntegrantePorNumero(numeroSalio);
@@ -1055,7 +1054,6 @@ async function manejarComandosClanUniversal(sock, jidChat, jidUsuario, texto, me
   }
   return false;
 }
-
 function formatearMovimiento(jidGrupo, r) {
   const info = ETIQUETAS_MOVIMIENTO[r.accion] || { icono: '•', texto: r.accion };
   const fecha = new Date(r.fecha).toLocaleString('es-PE', { timeZone: 'America/Lima', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -1074,6 +1072,7 @@ async function comandoMovimientos(sock, jidGrupo, jidUsuario, argumentoTexto) {
   if (!registros.length) { await sock.sendMessage(jidGrupo, { text: '📋 Todavía no hay movimientos registrados.' }); return; }
   await sock.sendMessage(jidGrupo, { text: `*ÚLTIMOS MOVIMIENTOS*\n\n${registros.map(r => formatearMovimiento(jidGrupo, r)).join('\n\n')}` });
 }
+
 async function comandoPromoverDegradar(sock, jidGrupo, jidUsuario, mencionados, accion) {
   if (!mencionados.length) return { ok: false };
   try {
@@ -1137,7 +1136,6 @@ async function procesarComandoJefe(sock, remitente, texto) {
   await sock.sendMessage(remitente, { text: `✅ Actualicé mi forma de expresarme:\n"${estiloGlobalExtra}"` });
 }
 
-// ── /actualizacion — la IA redacta el anuncio con las mejoras que le pases ──
 async function generarAnuncioActualizacionIA(mejorasTexto) {
   const prompt = `Escribe un anuncio corto, emocionante y cálido (tono femenino) avisando que el bot ${NOMBRE_BOT} entrará en mantenimiento para traer estas mejoras: ${mejorasTexto || 'mejoras generales de rendimiento y nuevas funciones'}. No agregues firma ni versión al final, eso se agrega aparte. Máximo 5 líneas.`;
   try {
@@ -1212,6 +1210,7 @@ async function manejarComandosGenerales(sock, jidChat, jidUsuario, texto, mencio
   }
   return false;
 }
+
 async function procesarMensajeGrupo(sock, msg, identificadoresBot) {
   const jidGrupo = msg.key.remoteJid;
   const jidUsuario = msg.key.participant || msg.key.remoteJid;
@@ -1241,6 +1240,8 @@ async function procesarMensajeGrupo(sock, msg, identificadoresBot) {
   if (PATRON_COMANDO_YOUTUBEVIDEO.test(texto)) { const m = texto.match(PATRON_COMANDO_YOUTUBEVIDEO); await manejarComandoYoutubeVideo(sock, jidGrupo, m[1]); return; }
   if (PATRON_COMANDO_FACEBOOK_AUDIO.test(texto)) { const m = texto.match(PATRON_COMANDO_FACEBOOK_AUDIO); await manejarComandoFacebook(sock, jidGrupo, m[1], 'audio'); return; }
   if (PATRON_COMANDO_FACEBOOK.test(texto)) { const m = texto.match(PATRON_COMANDO_FACEBOOK); await manejarComandoFacebook(sock, jidGrupo, m[1], 'video'); return; }
+  // 🆕 Instagram conectado en el flujo de grupo
+  if (PATRON_COMANDO_INSTAGRAM.test(texto)) { const m = texto.match(PATRON_COMANDO_INSTAGRAM); await manejarComandoInstagram(sock, jidGrupo, m[1]); return; }
 
   if (esIntencionCompra(texto)) {
     try { await sock.sendMessage(jidGrupo, { text: 'Dame un toque que le aviso a Alberto 🙌', mentions: [jidUsuario] }); await sock.sendMessage(JID_DUEÑO, { text: `💰 Posible cliente: ${nombreContacto} preguntó: "${texto}"` }); } catch (err) {}
@@ -1259,7 +1260,6 @@ async function procesarMensajeGrupo(sock, msg, identificadoresBot) {
 
   const consultaSinMencion = texto.replace(/@\d+/g, '').replace(/^\/\S*\s*/, '').trim() || texto;
 
-  // ── AUDIO CITADO — se procesa antes que el flujo de texto normal ─────────
   const audioCitado = extraerAudioCitado(msg);
   if (audioCitado) {
     try {
@@ -1382,6 +1382,8 @@ async function iniciarBot() {
         if (PATRON_COMANDO_YOUTUBEVIDEO.test(textoPersonal)) { const m = textoPersonal.match(PATRON_COMANDO_YOUTUBEVIDEO); await manejarComandoYoutubeVideo(sock, remitente, m[1]); return; }
         if (PATRON_COMANDO_FACEBOOK_AUDIO.test(textoPersonal)) { const m = textoPersonal.match(PATRON_COMANDO_FACEBOOK_AUDIO); await manejarComandoFacebook(sock, remitente, m[1], 'audio'); return; }
         if (PATRON_COMANDO_FACEBOOK.test(textoPersonal)) { const m = textoPersonal.match(PATRON_COMANDO_FACEBOOK); await manejarComandoFacebook(sock, remitente, m[1], 'video'); return; }
+        // 🆕 Instagram conectado en el flujo de chat privado
+        if (PATRON_COMANDO_INSTAGRAM.test(textoPersonal)) { const m = textoPersonal.match(PATRON_COMANDO_INSTAGRAM); await manejarComandoInstagram(sock, remitente, m[1]); return; }
 
         if (await manejarComandosClanUniversal(sock, remitente, remitente, textoPersonal, [], msg)) return;
 
@@ -1444,12 +1446,13 @@ setInterval(async () => {
     if (recordatoriosGrupo[i].tiempoEjecucion <= ahora) { const r = recordatoriosGrupo[i]; try { await sockActivo.sendMessage(r.jidGrupo, { text: `⏰ Recordatorio: ${r.texto}` }); } catch (err) {} recordatoriosGrupo.splice(i, 1); }
   }
 }, 30 * 1000);
+
 const PANEL_FONDO_URL = limpiarValorEnv(process.env.PANEL_FONDO_URL) || '';
 
 const LISTA_COMANDOS_PANEL = [
   { cat: '🧠 Inteligencia Artificial', items: [['/anzy <pregunta>', 'Pregúntale a la IA'], ['@bot <pregunta>', 'Mencionando al bot'], ['Cita un audio + menciona', 'Entiende y responde sobre el audio 🎙️'], ['/imagen <descripción>', 'Genera una imagen con IA']] },
   { cat: '🎭 Modos', items: [['/novia on · off', 'Modo cariñoso'], ['/amiga on · off', 'Modo amiga']] },
-  { cat: '🎉 Descargas', items: [['/tiktok <enlace>', 'TikTok sin marca de agua'], ['/youtube <enlace>', 'Audio de YouTube'], ['/youtubevideo <enlace>', 'Video de YouTube'], ['/facebook <enlace>', 'Video de Facebook'], ['/facebookaudio <enlace>', 'Audio de Facebook']] },
+  { cat: '🎉 Descargas', items: [['/tiktok <enlace>', 'TikTok sin marca de agua'], ['/youtube <enlace>', 'Audio de YouTube'], ['/youtubevideo <enlace>', 'Video de YouTube'], ['/facebook <enlace>', 'Video de Facebook'], ['/facebookaudio <enlace>', 'Audio de Facebook'], ['/instagram <enlace>', 'Video de Instagram']] },
   { cat: '🎉 Utilidades', items: [['/frase', 'Frase random'], ['/perfil @user', 'Actividad en el grupo']] },
   { cat: '👑 Admin (grupo)', items: [['/promover @user', 'Lo hace admin'], ['/degradar @user', 'Le quita admin'], ['/todos <msj>', 'Etiqueta a todos'], ['/cerrar · /abrir', 'Controla quién escribe'], ['/recordatorio <n>S/M/H <texto>', 'Aviso al grupo'], ['/ranking', 'Top de más activas']] },
   { cat: '👑 SOLO PROPIETARIO (oculto del chat)', items: [
@@ -1479,7 +1482,6 @@ app.get('/status', (req, res) => {
   res.json({ conectado: estado.conectado, botActivo, uptimeSegundos: Math.floor((Date.now() - estado.inicio) / 1000), mensajesRecibidos: estado.mensajesRecibidos, mensajesEnviados: estado.mensajesEnviados, intentosReconexion: estado.intentosReconexion, cuotaUsada: contadorCuota.usados, cuotaLimite: LIMITE_DIARIO_ESTIMADO, version: VERSION_BOT });
 });
 
-// ── Sin contraseña — solo tú tienes el enlace del panel ────────────────────
 app.get('/panel/toggle', (req, res) => { botActivo = !botActivo; res.redirect('/'); });
 
 app.get('/panel/actualizacion', async (req, res) => {
