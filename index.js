@@ -16,6 +16,10 @@ const CARPETA_BIN = path.join(__dirname, 'bin');
 const RUTA_YTDLP = fs.existsSync(path.join(CARPETA_BIN, 'yt-dlp')) ? path.join(CARPETA_BIN, 'yt-dlp') : 'yt-dlp';
 const HAY_FFMPEG_LOCAL = fs.existsSync(path.join(CARPETA_BIN, 'ffmpeg'));
 const ARGS_FFMPEG = HAY_FFMPEG_LOCAL ? `--ffmpeg-location "${CARPETA_BIN}"` : '';
+// 🆕 Ruta directa al binario de ffmpeg (para comprimir audios citados antes
+// de mandarlos a la IA) — distinto de ARGS_FFMPEG, que es solo el argumento
+// que se le pasa a yt-dlp.
+const RUTA_FFMPEG_BIN = HAY_FFMPEG_LOCAL ? path.join(CARPETA_BIN, 'ffmpeg') : 'ffmpeg';
 
 function verificarBinarioYtDlp() {
   return new Promise((resolve) => {
@@ -46,7 +50,7 @@ function limpiarArchivosTemporalesViejos() {
     const archivos = fs.readdirSync(__dirname);
     let borrados = 0;
     for (const archivo of archivos) {
-      if (/^temp_tiktok_/.test(archivo) || /^temp_youtube_/.test(archivo) || /^temp_facebook_/.test(archivo) || /^temp_instagram_/.test(archivo)) {
+      if (/^temp_tiktok_/.test(archivo) || /^temp_youtube_/.test(archivo) || /^temp_facebook_/.test(archivo) || /^temp_instagram_/.test(archivo) || /^temp_audio_ia_/.test(archivo)) {
         try { fs.unlinkSync(path.join(__dirname, archivo)); borrados++; } catch {}
       }
     }
@@ -146,7 +150,6 @@ async function manejarComandoTiktok(sock, jidDestino, enlace) {
 
 const ENLACE_YOUTUBE = /(?:https?:\/\/)?(?:www\.|m\.|music\.)?(?:youtube\.com\/(?:watch\?v=|shorts\/)|youtu\.be\/)[^\s]+/i;
 const ENLACE_FACEBOOK = /(?:https?:\/\/)?(?:www\.|m\.|web\.)?(?:facebook\.com|fb\.watch)\/[^\s]+/i;
-// 🆕 Nuevo: enlaces de Instagram (reels, publicaciones, IGTV)
 const ENLACE_INSTAGRAM = /(?:https?:\/\/)?(?:www\.)?instagram\.com\/(?:reel|reels|p|tv)\/[^\s]+/i;
 const URL_DESCARGAS = limpiarValorEnv(process.env.URL_DESCARGAS) || 'https://mini-servidor.onrender.com';
 const CLAVE_API_DESCARGAS = limpiarValorEnv(process.env.CLAVE_API_DESCARGAS) || 'Albert292776';
@@ -223,7 +226,6 @@ async function manejarComandoFacebook(sock, jidDestino, enlace, tipo) {
   finally { if (rutaTemporal && fs.existsSync(rutaTemporal)) { try { fs.unlinkSync(rutaTemporal); } catch {} } }
 }
 
-// 🆕 INSTAGRAM — mismo patrón que YouTube/Facebook: llama al mini-servidor
 async function descargarVideoInstagram(url) {
   const parametros = new URLSearchParams({ url });
   if (CLAVE_API_DESCARGAS) parametros.set('clave', CLAVE_API_DESCARGAS);
@@ -255,7 +257,6 @@ const PATRON_COMANDO_YOUTUBE = /^\/youtube\s+(\S+)/i;
 const PATRON_COMANDO_YOUTUBEVIDEO = /^\/youtubevideo\s+(\S+)/i;
 const PATRON_COMANDO_FACEBOOK_AUDIO = /^\/facebookaudio\s+(\S+)/i;
 const PATRON_COMANDO_FACEBOOK = /^\/facebook\s+(\S+)/i;
-// 🆕 Patrón de comando de Instagram
 const PATRON_COMANDO_INSTAGRAM = /^\/instagram\s+(\S+)/i;
 const CLAVE_IA_PRINCIPAL = process.env.CLAVE_IA_PRINCIPAL;
 const CLAVE_IA_RESPALDO = process.env.CLAVE_IA_RESPALDO;
@@ -268,12 +269,14 @@ const MODELO_IMAGEN = 'gemini-2.5-flash-image';
 const CODIGO_DUEÑO = '2927760128';
 const NOMBRE_BOT = 'Anzy';
 const CREADOR = 'Albert Drak';
-const VERSION_BOT = '3.3.0';
+const VERSION_BOT = '3.4.0';
 const TU_NUMERO = '51996399291';
 const NUMERO_BOT_VINCULADO = '51975922748';
 const JID_DUEÑO = `${TU_NUMERO}@s.whatsapp.net`;
 const PUERTO = process.env.PORT || 3000;
 const LIMITE_DIARIO_ESTIMADO = 1400;
+// 🔧 Subido de 900 a 1500, como pediste — respuestas más completas, aunque
+// tarden un poco más en generarse.
 const MAX_TOKENS_RESPUESTA = 1500;
 const INTEGRANTES_POR_PAGINA = 10;
 
@@ -357,8 +360,11 @@ CÓMO ERES:
 🚨 CRISIS REAL: responde con calidez genuina y anímalo a hablar con un profesional.
 `;
 
-const REGLAS_MODO_AMIGA = `\n\n👯 MODO AMIGA ACTIVO: háblale como su mejor amiga — cercana, relajada, bromista. tono de amiga pero interesada en el.`;
-const REGLAS_MODO_NOVIA = `\n\n💘 MODO NOVIA ACTIVO: háblale como su novia virtual — cariñosa, coqueta. un poco de comtenido sexual en la forma de expresarseo.`;
+const REGLAS_MODO_AMIGA = `\n\n👯 MODO AMIGA ACTIVO: háblale como su mejor amiga — cercana, relajada, bromista. Interésate por lo que te cuenta, dale seguimiento a la conversación anterior si aplica. Nada de tono romántico.`;
+
+// 🔧 Modo novia mejorado: más detalle de comportamiento, apodos cariñosos,
+// seguimiento real de la conversación — sigue sin ser explícito.
+const REGLAS_MODO_NOVIA = `\n\n💘 MODO NOVIA ACTIVO: ahora hablas con esta persona como su novia virtual — cariñosa, coqueta, un poco celosa en broma, y muy pendiente de ella. Usa apodos cariñosos (bebé, mi amor, corazón, mi vida) con naturalidad, sin abusar de ellos en cada frase. Muéstrate interesada de verdad en su día, hazle preguntas de vuelta, y retoma cosas que te haya contado antes en la charla si vienen al caso. Usa emojis como 🥺💕😘🫶 con soltura pero sin saturar. Si te pide ayuda con algo serio, ayúdala igual de bien, solo mantén ese tono cariñoso de fondo. Nunca vulgar, nunca contenido sexual explícito — el coqueteo es tierno e insinuante, jamás gráfico.`;
 
 const MENSAJES_ESPERA = ['💫 Dame un segundito 🥰', '🌸 Un momentito, ya vuelvo 💕', '✨ Dame un momento 🙈', '💖 Inténtalo de nuevo en un ratito 🌷'];
 function mensajeEsperaAleatorio() { return MENSAJES_ESPERA[Math.floor(Math.random() * MENSAJES_ESPERA.length)]; }
@@ -410,14 +416,22 @@ const modoAmiga = new Map();
 let estiloGlobalExtra = '';
 function esCodigoDueño(texto) { return texto.trim() === CODIGO_DUEÑO; }
 
-function claveModo(jidChat, jidUsuario) { return `${jidChat}:${jidUsuario}`; }
-function activarModo(mapaObjetivo, jidChat, jidUsuario) {
-  const clave = claveModo(jidChat, jidUsuario);
+// 🔧 IMPORTANTE: claveModo ahora espera recibir una IDENTIDAD YA RESUELTA
+// (un número real, calculado con resolverNumeroReal) en vez del JID crudo
+// del mensaje. Antes se usaba el JID tal cual llegaba, y como WhatsApp a
+// veces identifica a la misma persona con un @lid y otras veces con su
+// número real (según el mensaje), la clave cambiaba a mitad de conversación
+// y el bot "se olvidaba" que el modo amiga/novia estaba activo. Ahora,
+// como todos los llamados le pasan un número ya resuelto, la clave es
+// siempre la misma para esa persona.
+function claveModo(jidChat, identidadResuelta) { return `${jidChat}:${identidadResuelta}`; }
+function activarModo(mapaObjetivo, jidChat, identidadResuelta) {
+  const clave = claveModo(jidChat, identidadResuelta);
   modoNovia.delete(clave); modoAmiga.delete(clave);
   mapaObjetivo.set(clave, true);
 }
-function desactivarTodosLosModos(jidChat, jidUsuario) {
-  const clave = claveModo(jidChat, jidUsuario);
+function desactivarTodosLosModos(jidChat, identidadResuelta) {
+  const clave = claveModo(jidChat, identidadResuelta);
   modoNovia.delete(clave); modoAmiga.delete(clave);
 }
 
@@ -441,9 +455,9 @@ function construirClientesIA() {
 }
 const CLIENTES_IA = construirClientesIA();
 
-async function generarRespuestaIA(prompt, notasExtra, jidChat, jidUsuario) {
+async function generarRespuestaIA(prompt, notasExtra, jidChat, identidadModo) {
   let reglasFinales = REGLAS_IA_BASE;
-  const clave = claveModo(jidChat, jidUsuario);
+  const clave = claveModo(jidChat, identidadModo);
   if (modoNovia.get(clave)) reglasFinales += REGLAS_MODO_NOVIA;
   else if (modoAmiga.get(clave)) reglasFinales += REGLAS_MODO_AMIGA;
   if (estiloGlobalExtra) reglasFinales += `\n\n🔧 DIRECTIVA GLOBAL: ${estiloGlobalExtra}`;
@@ -459,7 +473,7 @@ async function generarRespuestaIA(prompt, notasExtra, jidChat, jidUsuario) {
   throw new Error('No hay ningún token de IA configurado');
 }
 
-// ── ENTENDER AUDIOS — se cita un audio + se menciona al bot (ya incluido) ──
+// ── ENTENDER AUDIOS — se cita un audio + se menciona al bot ────────────────
 function extraerAudioCitado(msg) {
   const citado = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
   if (!citado || !citado.audioMessage) return null;
@@ -473,26 +487,96 @@ async function descargarAudioCitado(audioMessageNode) {
   return buffer;
 }
 
-async function generarRespuestaIAConAudio(bufferAudio, mimetype, promptTexto, notasExtra, jidChat, jidUsuario) {
+// 🆕 Duración máxima de audio que se manda a la IA. Recortar audios muy
+// largos antes de subirlos es lo que más acelera la respuesta — no porque
+// el audio "pese" menos, sino porque menos segundos de audio = menos datos
+// que la IA tiene que procesar internamente.
+const DURACION_MAXIMA_AUDIO_IA_SEGUNDOS = 360; // 6 minutos
+
+// 🆕 Comprime y recorta el audio ANTES de mandarlo a la IA. Si algo falla
+// en la conversión, se manda el audio original tal cual (nunca se bloquea
+// la respuesta por esto).
+async function convertirAudioParaIA(bufferOriginal) {
+  const idTemp = Date.now();
+  const rutaEntrada = path.join(__dirname, `temp_audio_ia_in_${idTemp}.ogg`);
+  const rutaSalida = path.join(__dirname, `temp_audio_ia_out_${idTemp}.ogg`);
+  try {
+    fs.writeFileSync(rutaEntrada, bufferOriginal);
+    const cmd = [
+      `"${RUTA_FFMPEG_BIN}"`, '-y', '-i', `"${rutaEntrada}"`,
+      '-t', String(DURACION_MAXIMA_AUDIO_IA_SEGUNDOS),
+      '-ac', '1', '-ar', '16000', '-c:a', 'libopus', '-b:a', '24k',
+      `"${rutaSalida}"`
+    ].join(' ');
+    await ejecutarComando(cmd, { timeout: 30000 });
+    if (fs.existsSync(rutaSalida) && fs.statSync(rutaSalida).size > 500) {
+      return { buffer: fs.readFileSync(rutaSalida), mimetype: 'audio/ogg' };
+    }
+    return { buffer: bufferOriginal, mimetype: null };
+  } catch (err) {
+    console.log('⚠️ No se pudo comprimir el audio, se envía el original:', err.message.slice(0, 150));
+    return { buffer: bufferOriginal, mimetype: null };
+  } finally {
+    [rutaEntrada, rutaSalida].forEach(r => { if (fs.existsSync(r)) { try { fs.unlinkSync(r); } catch {} } });
+  }
+}
+
+// 🆕 "Hedging": lanza la tarea principal de inmediato; si no responde dentro
+// del retraso indicado, lanza la siguiente EN PARALELO (sin cancelar la
+// anterior) y usa la que responda primero. Esto evita que una demora
+// puntual de un solo cliente de IA duplique el tiempo de espera del
+// usuario, sin gastar de más cuando el principal responde rápido (que es
+// el caso normal).
+function primeraRespuestaExitosa(tareasFabricas, delayEntreIntentosMs) {
+  return new Promise((resolve, reject) => {
+    let pendientes = tareasFabricas.length;
+    let asentado = false;
+    let primerError = null;
+    tareasFabricas.forEach((fabrica, indice) => {
+      setTimeout(() => {
+        if (asentado) return;
+        fabrica().then((resultado) => {
+          if (!asentado) { asentado = true; resolve(resultado); }
+        }).catch((err) => {
+          if (!primerError) primerError = err;
+          pendientes--;
+          if (pendientes === 0 && !asentado) reject(primerError || new Error('Todas las tareas fallaron'));
+        });
+      }, indice * delayEntreIntentosMs);
+    });
+  });
+}
+const RETRASO_HEDGE_AUDIO_MS = 15000;
+
+async function generarRespuestaIAConAudio(bufferAudio, mimetype, promptTexto, notasExtra, jidChat, identidadModo) {
   let reglasFinales = REGLAS_IA_BASE;
-  const clave = claveModo(jidChat, jidUsuario);
+  const clave = claveModo(jidChat, identidadModo);
   if (modoNovia.get(clave)) reglasFinales += REGLAS_MODO_NOVIA;
   else if (modoAmiga.get(clave)) reglasFinales += REGLAS_MODO_AMIGA;
   if (notasExtra) reglasFinales += `\n\nCONTEXTO ADICIONAL: ${notasExtra}`;
 
+  const { buffer: bufferListo, mimetype: mimetypeListo } = await convertirAudioParaIA(bufferAudio);
+  const mimetypeFinal = mimetypeListo || mimetype || 'audio/ogg';
+
   const contenido = [{ role: 'user', parts: [
-    { inlineData: { mimeType: mimetype || 'audio/ogg', data: bufferAudio.toString('base64') } },
+    { inlineData: { mimeType: mimetypeFinal, data: bufferListo.toString('base64') } },
     { text: promptTexto || 'Escucha este audio y respóndeme sobre su contenido.' }
   ] }];
 
-  for (const cliente of CLIENTES_IA) {
-    try {
-      const res = await cliente.ai.models.generateContent({ model: cliente.modelo, contents: contenido, config: { systemInstruction: reglasFinales, safetySettings: SAFETY_SETTINGS, maxOutputTokens: MAX_TOKENS_RESPUESTA } });
-      registrarUsoIA();
-      return res.text;
-    } catch (err) { console.log(`⚠️ Falló IA con audio (${cliente.nombre}):`, err.message); }
+  if (CLIENTES_IA.length === 0) throw new Error('Ningún modelo pudo procesar el audio.');
+
+  const intentar = async (cliente) => {
+    const res = await cliente.ai.models.generateContent({ model: cliente.modelo, contents: contenido, config: { systemInstruction: reglasFinales, safetySettings: SAFETY_SETTINGS, maxOutputTokens: MAX_TOKENS_RESPUESTA } });
+    registrarUsoIA();
+    return res.text;
+  };
+
+  try {
+    return await primeraRespuestaExitosa(CLIENTES_IA.map(cliente => () => intentar(cliente)), RETRASO_HEDGE_AUDIO_MS);
+  } catch (err) {
+    console.log('⚠️ Falló IA con audio en todos los clientes:', err.message);
+    throw new Error('Ningún modelo pudo procesar el audio.');
   }
-  throw new Error('Ningún modelo pudo procesar el audio.');
 }
 const FRASES_AVISO_SALIDA_FALLBACK = ['Ay, mira quién se fue del grupo... y sí lo tenía fichado en el clan 👀', 'Se me salió alguien del grupo y ¡sorpresa! está en mi lista 📋', 'Alguien se despidió del grupo, pero yo sí lo tenía registrado 💅'];
 const FRASES_CONFIRMACION_ELIMINACION_FALLBACK = ['Listo, su registro ya no está en la lista del clan 🗑️', 'Su ficha ya fue eliminada de la lista 💔', 'Ya quité su registro, todo limpio 📋✨'];
@@ -916,6 +1000,7 @@ function generarResumenClan() {
   if (paginas <= 1) return primeraPagina;
   return `${primeraPagina}\n\nHay ${paginas} páginas (${lista.length} integrantes):\n${Array.from({ length: paginas - 1 }, (_, i) => `/lista ${String(i + 2).padStart(2, '0')}`).join('\n')}`;
 }
+
 async function comandoClanAgregar(sock, jidChat, jidUsuario, textoCompleto) {
   if (!(await tienePermisoClan(sock, jidChat, jidUsuario))) { await sock.sendMessage(jidChat, { text: 'Solo las admins o el propietario pueden registrar integrantes 🚫' }); return; }
   const partes = textoCompleto.split(';').map(p => p.trim()).filter(Boolean);
@@ -1200,8 +1285,39 @@ async function manejarComandosGenerales(sock, jidChat, jidUsuario, texto, mencio
       await sock.sendMessage(jidChat, { text: `🔊 Listo, ya vuelvo a responderle.` });
       return true;
     }
-    case '/novia': { const sub = (resto[0] || '').toLowerCase(); if (sub === 'on') { activarModo(modoNovia, jidChat, jidUsuario); await sock.sendMessage(jidChat, { text: '💕 Modo novia activado 😘' }); } else if (sub === 'off') { desactivarTodosLosModos(jidChat, jidUsuario); await sock.sendMessage(jidChat, { text: '💫 Volví a mi forma normal.' }); } else await sock.sendMessage(jidChat, { text: 'Uso:\n/novia on\n/novia off' }); return true; }
-    case '/amiga': { const sub = (resto[0] || '').toLowerCase(); if (sub === 'on') { activarModo(modoAmiga, jidChat, jidUsuario); await sock.sendMessage(jidChat, { text: '👯 Modo amiga activado 💕' }); } else if (sub === 'off') { desactivarTodosLosModos(jidChat, jidUsuario); await sock.sendMessage(jidChat, { text: '☺️ Volví a mi forma normal.' }); } else await sock.sendMessage(jidChat, { text: 'Uso:\n/amiga on\n/amiga off' }); return true; }
+    // 🔧 /novia — arreglado el bug de la clave (usa identidadModo resuelto)
+    // 🆕 /novia @usuario — SOLO el propietario, aplica el modo dirigido a
+    // esa persona sin encender el modo global del chat.
+    case '/novia': {
+      const sub = (resto[0] || '').toLowerCase();
+      if (sub === 'on') {
+        const identidadModo = (await resolverNumeroReal(sock, jidChat, jidUsuario)) || extraerNumero(jidUsuario);
+        activarModo(modoNovia, jidChat, identidadModo);
+        await sock.sendMessage(jidChat, { text: '💕 Modo novia activado 😘' });
+      } else if (sub === 'off') {
+        const identidadModo = (await resolverNumeroReal(sock, jidChat, jidUsuario)) || extraerNumero(jidUsuario);
+        desactivarTodosLosModos(jidChat, identidadModo);
+        await sock.sendMessage(jidChat, { text: '💫 Volví a mi forma normal.' });
+      } else if (mencionados && mencionados.length) {
+        if (!(await esPropietarioContexto(sock, jidChat, jidUsuario))) { await sock.sendMessage(jidChat, { text: 'Solo el propietario puede usar /novia @usuario 🚫' }); return true; }
+        if (!esGrupo) { await sock.sendMessage(jidChat, { text: 'Ese uso de /novia solo funciona dentro de un grupo.' }); return true; }
+        const identidadObjetivo = (await resolverNumeroReal(sock, jidChat, mencionados[0])) || extraerNumero(mencionados[0]);
+        activarModo(modoNovia, jidChat, identidadObjetivo);
+        await sock.sendMessage(jidChat, { text: `💘 Listo, ahora seré la novia virtual de ${obtenerNombreVisible(mencionados[0])} en este chat 😏` });
+      } else {
+        await sock.sendMessage(jidChat, { text: 'Uso:\n/novia on\n/novia off\n/novia @usuario (solo propietario)' });
+      }
+      return true;
+    }
+    // 🔧 /amiga — mismo arreglo de clave que /novia
+    case '/amiga': {
+      const sub = (resto[0] || '').toLowerCase();
+      const identidadModo = (await resolverNumeroReal(sock, jidChat, jidUsuario)) || extraerNumero(jidUsuario);
+      if (sub === 'on') { activarModo(modoAmiga, jidChat, identidadModo); await sock.sendMessage(jidChat, { text: '👯 Modo amiga activado 💕' }); }
+      else if (sub === 'off') { desactivarTodosLosModos(jidChat, identidadModo); await sock.sendMessage(jidChat, { text: '☺️ Volví a mi forma normal.' }); }
+      else await sock.sendMessage(jidChat, { text: 'Uso:\n/amiga on\n/amiga off' });
+      return true;
+    }
     case '/info': await sock.sendMessage(jidChat, { text: generarTextoInfo() }); return true;
     case '/creador': await sock.sendMessage(jidChat, { text: TEXTO_CREADOR }); return true;
     case '/actualizacion': await comandoActualizacion(sock, jidChat, jidUsuario, resto.join(' ')); return true;
@@ -1210,7 +1326,6 @@ async function manejarComandosGenerales(sock, jidChat, jidUsuario, texto, mencio
   }
   return false;
 }
-
 async function procesarMensajeGrupo(sock, msg, identificadoresBot) {
   const jidGrupo = msg.key.remoteJid;
   const jidUsuario = msg.key.participant || msg.key.remoteJid;
@@ -1240,7 +1355,6 @@ async function procesarMensajeGrupo(sock, msg, identificadoresBot) {
   if (PATRON_COMANDO_YOUTUBEVIDEO.test(texto)) { const m = texto.match(PATRON_COMANDO_YOUTUBEVIDEO); await manejarComandoYoutubeVideo(sock, jidGrupo, m[1]); return; }
   if (PATRON_COMANDO_FACEBOOK_AUDIO.test(texto)) { const m = texto.match(PATRON_COMANDO_FACEBOOK_AUDIO); await manejarComandoFacebook(sock, jidGrupo, m[1], 'audio'); return; }
   if (PATRON_COMANDO_FACEBOOK.test(texto)) { const m = texto.match(PATRON_COMANDO_FACEBOOK); await manejarComandoFacebook(sock, jidGrupo, m[1], 'video'); return; }
-  // 🆕 Instagram conectado en el flujo de grupo
   if (PATRON_COMANDO_INSTAGRAM.test(texto)) { const m = texto.match(PATRON_COMANDO_INSTAGRAM); await manejarComandoInstagram(sock, jidGrupo, m[1]); return; }
 
   if (esIntencionCompra(texto)) {
@@ -1260,11 +1374,16 @@ async function procesarMensajeGrupo(sock, msg, identificadoresBot) {
 
   const consultaSinMencion = texto.replace(/@\d+/g, '').replace(/^\/\S*\s*/, '').trim() || texto;
 
+  // 🔧 Identidad resuelta UNA sola vez para esta persona, en este chat —
+  // se usa tanto para el audio citado como para la respuesta de texto, así
+  // el modo novia/amiga se detecta siempre con la misma clave.
+  const identidadModo = (await resolverNumeroReal(sock, jidGrupo, jidUsuario)) || extraerNumero(jidUsuario);
+
   const audioCitado = extraerAudioCitado(msg);
   if (audioCitado) {
     try {
       const bufferAudio = await descargarAudioCitado(audioCitado);
-      const respuesta = await generarRespuestaIAConAudio(bufferAudio, audioCitado.mimetype, consultaSinMencion || 'Escucha este audio y cuéntame de qué trata.', `Mensaje de ${nombreContacto} en un grupo.`, jidGrupo, jidUsuario);
+      const respuesta = await generarRespuestaIAConAudio(bufferAudio, audioCitado.mimetype, consultaSinMencion || 'Escucha este audio y cuéntame de qué trata.', `Mensaje de ${nombreContacto} en un grupo.`, jidGrupo, identidadModo);
       await enviarRespuestaHumanizada(sock, jidGrupo, respuesta, [jidUsuario]);
       agregarAMemoriaCorta(jidUsuario, texto, respuesta);
     } catch (err) { console.log('❌ Error procesando audio citado:', err.message); await sock.sendMessage(jidGrupo, { text: '💔 No pude escuchar ese audio, intenta de nuevo.' }); }
@@ -1293,7 +1412,7 @@ async function procesarMensajeGrupo(sock, msg, identificadoresBot) {
     if (esDueño) notas += `\n\nIMPORTANTE: es TU PROPIETARIO/CREADOR.`;
     if (textoCitado) notas += `\n\nMENSAJE CITADO: "${textoCitado}"`;
     notas += obtenerContextoCorto(jidUsuario);
-    const respuesta = await generarRespuestaIA(consultaSinMencion, notas, jidGrupo, jidUsuario);
+    const respuesta = await generarRespuestaIA(consultaSinMencion, notas, jidGrupo, identidadModo);
     await enviarRespuestaHumanizada(sock, jidGrupo, respuesta, [jidUsuario]);
     agregarAMemoriaCorta(jidUsuario, texto, respuesta);
   } catch (err) { console.log('❌ Error IA:', err.message); await sock.sendMessage(jidGrupo, { text: mensajeEsperaAleatorio() }); }
@@ -1382,7 +1501,6 @@ async function iniciarBot() {
         if (PATRON_COMANDO_YOUTUBEVIDEO.test(textoPersonal)) { const m = textoPersonal.match(PATRON_COMANDO_YOUTUBEVIDEO); await manejarComandoYoutubeVideo(sock, remitente, m[1]); return; }
         if (PATRON_COMANDO_FACEBOOK_AUDIO.test(textoPersonal)) { const m = textoPersonal.match(PATRON_COMANDO_FACEBOOK_AUDIO); await manejarComandoFacebook(sock, remitente, m[1], 'audio'); return; }
         if (PATRON_COMANDO_FACEBOOK.test(textoPersonal)) { const m = textoPersonal.match(PATRON_COMANDO_FACEBOOK); await manejarComandoFacebook(sock, remitente, m[1], 'video'); return; }
-        // 🆕 Instagram conectado en el flujo de chat privado
         if (PATRON_COMANDO_INSTAGRAM.test(textoPersonal)) { const m = textoPersonal.match(PATRON_COMANDO_INSTAGRAM); await manejarComandoInstagram(sock, remitente, m[1]); return; }
 
         if (await manejarComandosClanUniversal(sock, remitente, remitente, textoPersonal, [], msg)) return;
@@ -1394,12 +1512,15 @@ async function iniciarBot() {
 
         if (debeResponderIA(textoPersonal, msg, IDENTIFICADORES_BOT_CACHE)) {
           const consultaSinMencion = textoPersonal.replace(/^\/\S*\s*/, '').trim() || textoPersonal;
+          // 🔧 En privado la identidad es simplemente el número de quien
+          // escribe — no hace falta resolver contra metadata de grupo.
+          const identidadModo = extraerNumero(remitente);
 
           const audioCitado = extraerAudioCitado(msg);
           if (audioCitado) {
             try {
               const bufferAudio = await descargarAudioCitado(audioCitado);
-              const respuesta = await generarRespuestaIAConAudio(bufferAudio, audioCitado.mimetype, consultaSinMencion || 'Escucha este audio y cuéntame de qué trata.', `Mensaje privado de ${msg.pushName || 'un usuario'}.`, remitente, remitente);
+              const respuesta = await generarRespuestaIAConAudio(bufferAudio, audioCitado.mimetype, consultaSinMencion || 'Escucha este audio y cuéntame de qué trata.', `Mensaje privado de ${msg.pushName || 'un usuario'}.`, remitente, identidadModo);
               await enviarRespuestaHumanizada(sock, remitente, respuesta, []);
               agregarAMemoriaCorta(remitente, textoPersonal, respuesta);
             } catch (err) { await sock.sendMessage(remitente, { text: '💔 No pude escuchar ese audio.' }); }
@@ -1417,7 +1538,7 @@ async function iniciarBot() {
             let notas = `Mensaje privado de ${msg.pushName || 'un usuario'}.`;
             if (esDueño) notas += `\n\nIMPORTANTE: es TU PROPIETARIO/CREADOR.`;
             notas += obtenerContextoCorto(remitente);
-            const respuesta = await generarRespuestaIA(consultaSinMencion, notas, remitente, remitente);
+            const respuesta = await generarRespuestaIA(consultaSinMencion, notas, remitente, identidadModo);
             await enviarRespuestaHumanizada(sock, remitente, respuesta, []);
             agregarAMemoriaCorta(remitente, textoPersonal, respuesta);
           } catch (err) { await sock.sendMessage(remitente, { text: mensajeEsperaAleatorio() }); }
@@ -1451,7 +1572,7 @@ const PANEL_FONDO_URL = limpiarValorEnv(process.env.PANEL_FONDO_URL) || '';
 
 const LISTA_COMANDOS_PANEL = [
   { cat: '🧠 Inteligencia Artificial', items: [['/anzy <pregunta>', 'Pregúntale a la IA'], ['@bot <pregunta>', 'Mencionando al bot'], ['Cita un audio + menciona', 'Entiende y responde sobre el audio 🎙️'], ['/imagen <descripción>', 'Genera una imagen con IA']] },
-  { cat: '🎭 Modos', items: [['/novia on · off', 'Modo cariñoso'], ['/amiga on · off', 'Modo amiga']] },
+  { cat: '🎭 Modos', items: [['/novia on · off', 'Modo cariñoso'], ['/amiga on · off', 'Modo amiga'], ['/novia @usuario', 'Solo propietario — activa modo novia dirigido a esa persona']] },
   { cat: '🎉 Descargas', items: [['/tiktok <enlace>', 'TikTok sin marca de agua'], ['/youtube <enlace>', 'Audio de YouTube'], ['/youtubevideo <enlace>', 'Video de YouTube'], ['/facebook <enlace>', 'Video de Facebook'], ['/facebookaudio <enlace>', 'Audio de Facebook'], ['/instagram <enlace>', 'Video de Instagram']] },
   { cat: '🎉 Utilidades', items: [['/frase', 'Frase random'], ['/perfil @user', 'Actividad en el grupo']] },
   { cat: '👑 Admin (grupo)', items: [['/promover @user', 'Lo hace admin'], ['/degradar @user', 'Le quita admin'], ['/todos <msj>', 'Etiqueta a todos'], ['/cerrar · /abrir', 'Controla quién escribe'], ['/recordatorio <n>S/M/H <texto>', 'Aviso al grupo'], ['/ranking', 'Top de más activas']] },
@@ -1463,6 +1584,7 @@ const LISTA_COMANDOS_PANEL = [
     ['/integrantes · /lista NN', 'Ver el clan'], ['/integrante @user', 'Ficha de esa persona'],
     ['/silencio · /activarse @user', 'Ignorar/reactivar usuario'], ['/movimiento', 'Últimos movimientos'],
     ['/actualizacion <mejoras>', 'La IA redacta el aviso de mantenimiento y lo manda a todos los grupos'],
+    ['/novia @usuario', 'Activa modo novia dirigido a esa persona, sin encender el modo global'],
     ['Aviso de salida', 'Si un integrante sale del grupo, el aviso+ficha+foto se manda AL MISMO GRUPO; solo tú confirmas la eliminación']
   ] },
   { cat: '📋 Info', items: [['/info', 'Info del bot'], ['/creador', 'Quién lo hizo'], ['/comando anzy', 'Lista pública']] },
